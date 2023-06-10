@@ -1,4 +1,4 @@
-use rprompt::prompt_reply;
+use rustyline::{error::ReadlineError, DefaultEditor, Result};
 
 fn read(line: String) -> String {
     todo!()
@@ -16,11 +16,21 @@ fn rep(input: String) {
     print(input)
 }
 
-fn main() {
+fn main() -> Result<()> {
+    let mut rl = DefaultEditor::new()?;
     loop {
-        let Ok(input) = prompt_reply("user>") else {
-            break;
-        };
-        rep(input);
+        let readline = rl.readline("user> ");
+        match readline {
+            Ok(line) => {
+                rl.add_history_entry(line.clone())?;
+                rep(line)
+            }
+            Err(ReadlineError::Eof | ReadlineError::Interrupted) => break,
+            Err(err) => {
+                println!("{}", err);
+                break;
+            }
+        }
     }
+    Ok(())
 }

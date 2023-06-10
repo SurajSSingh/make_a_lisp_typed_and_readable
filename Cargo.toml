@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies]
 combine = "4.6.6"
-rprompt = "2.0.2"
+rustyline = "11.0.0"
