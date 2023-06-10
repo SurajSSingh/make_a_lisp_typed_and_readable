@@ -1,34 +1,34 @@
 use rustyline::{error::ReadlineError, DefaultEditor, Result};
 
-fn read(line: String) -> String {
-    todo!()
+fn read(rl: &mut DefaultEditor) -> Result<String> {
+    let line = rl.readline("user> ")?;
+    rl.add_history_entry(line.clone())?;
+    Ok(line)
 }
 
 fn eval(ast: String) -> String {
-    todo!()
+    ast
 }
 
 fn print(value: String) {
     println!("{value}")
 }
 
-fn rep(input: String) {
-    print(input)
+fn rep(rl: &mut DefaultEditor) -> Result<()> {
+    print(eval(read(rl)?));
+    Ok(())
 }
 
 fn main() -> Result<()> {
     let mut rl = DefaultEditor::new()?;
     loop {
-        let readline = rl.readline("user> ");
-        match readline {
-            Ok(line) => {
-                rl.add_history_entry(line.clone())?;
-                rep(line)
-            }
-            Err(ReadlineError::Eof | ReadlineError::Interrupted) => break,
-            Err(err) => {
-                println!("{}", err);
-                break;
+        if let Err(err) = rep(&mut rl) {
+            match err {
+                ReadlineError::Eof | ReadlineError::Interrupted => break,
+                _ => {
+                    println!("{}", err);
+                    break;
+                }
             }
         }
     }
