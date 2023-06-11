@@ -1,21 +1,23 @@
 use rustyline::{error::ReadlineError, DefaultEditor, Result};
 
+mod step0;
+
 fn read(rl: &mut DefaultEditor) -> Result<String> {
     let line = rl.readline("user> ")?;
     rl.add_history_entry(line.clone())?;
     Ok(line)
 }
 
-fn eval(ast: String) -> String {
+fn eval(ast: &str) -> &str {
     ast
 }
 
-fn print(value: String) {
+fn print(value: &str) {
     println!("{value}")
 }
 
 fn rep(rl: &mut DefaultEditor) -> Result<()> {
-    print(eval(read(rl)?));
+    print(eval(&read(rl)?));
     Ok(())
 }
 
