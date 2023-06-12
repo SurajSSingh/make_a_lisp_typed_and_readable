@@ -351,7 +351,7 @@ pub(crate) mod reader {
 }
 
 pub(crate) mod printer {
-    use crate::step1::Ast;
+    use crate::step1_read_print::Ast;
 
     pub fn pr_str(ast: Ast) -> String {
         ast.expr.to_string()
