@@ -60,7 +60,7 @@ abc-def
 
 ;>>> deferrable=True
 
-;;
+
 ;; -------- Deferrable Functionality --------
 
 ;; Testing read of nil/true/false
@@ -222,8 +222,7 @@ false
 ({})
 ;=>({})
 
-;; Testing read of comments
- ;; whole line comment (not an exception)
+;; Testing read of comments whole line comment (not an exception)
 1 ; comment after expression
 ;=>1
 1; comment after expression
@@ -235,7 +234,7 @@ false
 
 ;>>> soft=True
 ;>>> optional=True
-;;
+
 ;; -------- Optional Functionality --------
 
 ;; Testing read of ^/metadata
@@ -244,7 +243,6 @@ false
 
 
 ;; Non alphanumerice characters in strings
-;;; \t is not specified enough to be tested
 "\n"
 ;=>"\n"
 "#"
@@ -259,6 +257,7 @@ false
 ;=>"\\"
 "|"
 ;=>"|"
+;;; \t is not specified enough to be tested
 
 ;; Non alphanumeric characters in comments
 1;!
