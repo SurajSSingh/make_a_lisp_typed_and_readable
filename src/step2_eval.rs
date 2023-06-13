@@ -416,6 +416,34 @@ fn eval_ast(expr: MalType, env: &mut HashMap<String, MalType>) -> Result<MalType
                     });
             new_list.map(MalType::List)
         }
+        MalType::Vector(v) => {
+            let new_vec =
+                v.iter()
+                    .map(|e| eval(e.clone(), env))
+                    .try_fold(Vec::new(), |mut vector, r| {
+                        if let Ok(e) = r {
+                            vector.push(e);
+                            Ok(vector)
+                        } else {
+                            Err(r.unwrap_err())
+                        }
+                    });
+            new_vec.map(MalType::Vector)
+        }
+        MalType::Map(m) => {
+            let new_map = m.iter().map(|(k, v)| (k, eval(v.clone(), env))).try_fold(
+                Vec::new(),
+                |mut map, (k, r)| {
+                    if let Ok(e) = r {
+                        map.push((k.to_owned(), e));
+                        Ok(map)
+                    } else {
+                        Err(r.unwrap_err())
+                    }
+                },
+            );
+            new_map.map(MalType::Map)
+        }
         _ => Ok(expr),
     }
 }
@@ -436,11 +464,6 @@ fn eval(expr: MalType, env: &mut HashMap<String, MalType>) -> Result<MalType, Re
                         "Resulting list is empty and cannot be evaluated!".to_string(),
                     ))
                 }
-                // if v.is_empty() {
-                // }
-                // match v.split_off(1) {
-                //     (a, b) => {}
-                // }
             } else {
                 Err(ReplError::Eval(
                     "Resulting list could not be evaluated!".to_string(),
@@ -544,9 +567,9 @@ mod tests {
     #[test_case(r#"(* -3 6)"#, r#"-18"# ; r#"Test 5: (* -3 6) => -18"#)]
     #[test_case(r#"(/ (- (+ 515 (* -87 311)) 296) 27)"#, r#"-994"# ; r#"Test 6: (/ (- (+ 515 (* -87 311)) 296) 27) => -994"#)]
     #[test_case(r#"()"#, r#"()"# ; r#"Testing empty list"#)]
-    // #[test_case(r#"[1 2 (+ 1 2)]"#, r#"[1 2 3]"# ; r#"Testing evaluation within collection literals"#)]
-    // #[test_case(r#"{"a" (+ 7 8)}"#, r#"{"a" 15}"# ; r#"Test 8: {"a" (+ 7 8)} => {"a" 15}"#)]
-    // #[test_case(r#"{:a (+ 7 8)}"#, r#"{:a 15}"# ; r#"Test 9: {:a (+ 7 8)} => {:a 15}"#)]
+    #[test_case(r#"[1 2 (+ 1 2)]"#, r#"[1 2 3]"# ; r#"Testing evaluation within collection literals"#)]
+    #[test_case(r#"{"a" (+ 7 8)}"#, r#"{"a" 15}"# ; r#"Test 8: {"a" (+ 7 8)} => {"a" 15}"#)]
+    #[test_case(r#"{:a (+ 7 8)}"#, r#"{:a 15}"# ; r#"Test 9: {:a (+ 7 8)} => {:a 15}"#)]
     #[test_case(r#"[]"#, r#"[]"# ; r#"Check that evaluation hasn't broken empty collections"#)]
     #[test_case(r#"{}"#, r#"{}"# ; r#"Test 10: {} => {}"#)]
     fn step_2_tester_eval_success(input: &str, output: &str) {
