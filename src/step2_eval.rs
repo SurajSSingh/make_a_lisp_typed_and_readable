@@ -3,9 +3,11 @@ use std::collections::{HashMap, VecDeque};
 use reader::{MalType, ParseError};
 use rustyline::{error::ReadlineError, DefaultEditor};
 
+/// Either results in a MAL type or gives back a message for an error
 pub type MalResult = Result<MalType, String>;
 
 pub(crate) mod reader {
+
     use std::{collections::VecDeque, fmt::Display};
 
     use logos::Logos;
@@ -14,39 +16,54 @@ pub(crate) mod reader {
 
     #[derive(Logos, Clone, Debug, PartialEq)]
     #[logos(skip r"[ \t\n\f]+")]
+    /// Token produced from the lexing step
     enum Token<'t> {
         #[token("(")]
+        /// Open Parenthesis (
         OpenParen,
         #[token(")")]
+        /// Close Parenthesis )
         CloseParen,
         #[token("[")]
+        /// Open Bracket [
         OpenBracket,
         #[token("]")]
+        /// Close Bracket ]
         CloseBracket,
         #[token("{")]
+        /// Open Brace {
         OpenBrace,
         #[token("}")]
+        /// Close Brace }
         CloseBrace,
         #[token("'")]
+        /// Apostrophe '
         Quote,
         #[token("`")]
+        /// Backtick `
         Quasiquote,
         #[token("~")]
+        /// Tilde ~
         Unquote,
         #[token("@")]
+        /// At-symbol @
         Deref,
         #[token("^")]
+        /// Caret ^
         Meta,
 
-        // #[regex(r"[\[\]{}()'`~^@]")]
-        // SingleTok(&'t str),
         #[regex(r#""(?:\\.|[^\\"])*"?"#)]
+        /// String: Open Quote ... Stuff in between ... Close Quote
         StringTok(&'t str),
 
         #[regex(r";.*")]
+        /// Comment: Semicolon ... Stuff in between ... until \n
         Comment(&'t str),
 
         #[regex(r#"[^\s\[\]{}('"`,;~@)]*"#)]
+        /// Atom: Anything else, should be catch all
+        ///
+        /// Note: Atom disallows ~ and @ because of Logos's parsing rule; this is not in original regex
         Atom(&'t str),
     }
 
@@ -72,15 +89,14 @@ pub(crate) mod reader {
     }
 
     impl<'t> Token<'t> {
-        fn is_atom(&self) -> bool {
-            matches!(self, Token::Atom(_))
-        }
+        /// Check if a given token is a comment
         fn is_comment(&self) -> bool {
             matches!(self, Token::Comment(_))
         }
     }
 
     #[derive(PartialEq, Clone, Debug, PartialOrd)]
+    /// Basic Types with in the interpreter
     pub enum MalType {
         Nil,
         True,
@@ -153,6 +169,7 @@ pub(crate) mod reader {
 
     #[derive(Debug, Clone, Copy, PartialEq)]
     #[non_exhaustive]
+    /// Error messages produced during parsing stage
     pub enum ParseError {
         Eof,
         UnbalancedParen,
@@ -163,24 +180,26 @@ pub(crate) mod reader {
             match self {
                 ParseError::Eof | ParseError::UnbalancedParen => {
                     f.write_str("(EOF|end of input|unbalanced)")
-                }
-                _ => todo!(),
+                } // _ => todo!(),
             }
         }
     }
 
+    /// Read from a string input and try to produce a new expression
     pub fn read_str(input: &str) -> Result<Box<MalType>, ParseError> {
         let mut lexed_tokens = tokenize(input);
         let (expr, _rem) = read_form(&mut lexed_tokens)?;
         Ok(Box::new(expr))
     }
+
+    /// Take a string and produce a list of token
     fn tokenize<'t>(input: &'t str) -> VecDeque<Token<'t>> {
         Box::new(Token::lexer(input).filter_map(|res: Result<Token<'t>, ()>| res.ok()))
             .filter(|tok| !tok.is_comment())
-            // .map(|tok| tok.to_string())
             .collect()
     }
 
+    /// Take a sequence of token and
     fn read_form<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
@@ -239,6 +258,9 @@ pub(crate) mod reader {
         }
     }
 
+    /// Read a meta
+    ///
+    /// Example: ^{"a" 1} [1 2 3] -> (with-meta [1 2 3] {"a" 1})
     fn read_meta<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
@@ -253,6 +275,7 @@ pub(crate) mod reader {
         Ok((MalType::Meta(list), rem))
     }
 
+    ///
     fn read_list<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
@@ -274,6 +297,10 @@ pub(crate) mod reader {
         Err(ParseError::UnbalancedParen)
     }
 
+    /// Read in a vector from lexed list
+    ///
+    /// Example:  
+    /// * \[1, 2, 3] -> **OK**: MalType::Vector(\[1,2,3])
     fn read_vector<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
@@ -294,6 +321,12 @@ pub(crate) mod reader {
         }
         Err(ParseError::UnbalancedParen)
     }
+
+    /// Read a hashmap from lexed list
+    ///
+    /// Example:
+    /// * {"a" 1} -> **OK**: MalType::Map({"a":1}))
+    /// * {"a" 1 -> **ERR**: Unbalanced Parenthesis
     fn read_hashmap<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
@@ -316,6 +349,10 @@ pub(crate) mod reader {
         Err(ParseError::UnbalancedParen)
     }
 
+    ///Check if a given string is valid with the following condition:
+    /// 1. Starts with a double quote mark
+    /// 2. Ends with an unescaped double quote
+    /// 3. Escaped characters allowed between
     fn check_string(s: &str) -> bool {
         s.chars().fold((true, false), |acc, c| match (c, acc) {
             ('\"', (quote_open, false)) => (!quote_open, false),
@@ -325,6 +362,9 @@ pub(crate) mod reader {
         }) == (true, false)
     }
 
+    /// Read an atom from the given lexed list, can be either string or atom
+    ///
+    ///
     fn read_atom<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
@@ -363,11 +403,13 @@ pub(crate) mod reader {
 pub(crate) mod printer {
     use crate::step2_eval::Ast;
 
+    /// Print out the AST expression
     pub fn pr_str(ast: Ast) -> String {
         ast.expr.to_string()
     }
 }
 
+/// Abstract syntax tree
 pub struct Ast {
     pub expr: MalType,
 }
@@ -379,12 +421,14 @@ impl Ast {
 }
 
 #[derive(Debug)]
+/// Union of all the types of errors in the program
 enum ReplError {
     Readline(ReadlineError),
     Parse(ParseError),
     Eval(String),
 }
 
+/// Read in from a given editor and parse it into an AST
 fn read(rl: &mut DefaultEditor) -> Result<Ast, ReplError> {
     let line = rl.readline("user> ").map_err(ReplError::Readline)?;
     rl.add_history_entry(line.clone())
@@ -393,6 +437,7 @@ fn read(rl: &mut DefaultEditor) -> Result<Ast, ReplError> {
     Ok(Ast { expr })
 }
 
+/// Evaluate an expression with a given environment
 fn eval_ast(expr: MalType, env: &mut HashMap<String, MalType>) -> Result<MalType, ReplError> {
     match expr {
         MalType::Symbol(s) => {
@@ -448,10 +493,11 @@ fn eval_ast(expr: MalType, env: &mut HashMap<String, MalType>) -> Result<MalType
     }
 }
 
+/// Evaluate the given expression and return the result
 fn eval(expr: MalType, env: &mut HashMap<String, MalType>) -> Result<MalType, ReplError> {
     match expr {
         MalType::List(ref v) if v.is_empty() => Ok(expr),
-        MalType::List(ref v) => {
+        MalType::List(_) => {
             let new_list = eval_ast(expr, env)?;
             if let MalType::List(mut v) = new_list {
                 if let Some(mal) = v.pop_front() {
@@ -474,6 +520,7 @@ fn eval(expr: MalType, env: &mut HashMap<String, MalType>) -> Result<MalType, Re
     }
 }
 
+/// Print a given AST
 fn print(value: Ast) {
     println!("{}", printer::pr_str(value))
 }
@@ -484,12 +531,15 @@ macro_rules! built_in_insert {
     };
 }
 
+/// Runs the read, evaluate, and print functions in that order
 fn rep(rl: &mut DefaultEditor, env: &mut HashMap<String, MalType>) -> Result<(), ReplError> {
     let ast = read(rl)?;
     let res = Ast::new(eval(ast.expr, env)?);
-    Ok(print(res))
+    print(res);
+    Ok(())
 }
 
+/// Runs the repl
 pub fn main() -> rustyline::Result<()> {
     let mut rl = DefaultEditor::new()?;
     let mut repl_env: HashMap<String, MalType> = HashMap::default();
@@ -538,6 +588,7 @@ mod tests {
     use super::*;
     use test_case::test_case;
 
+    /// Generate test environment
     fn create_test_environment() -> HashMap<String, MalType> {
         let mut test_evn = HashMap::default();
         built_in_insert!(test_evn, "+" => |args| match (&args[0], &args[1]) {
@@ -572,6 +623,7 @@ mod tests {
     #[test_case(r#"{:a (+ 7 8)}"#, r#"{:a 15}"# ; r#"Test 9: {:a (+ 7 8)} => {:a 15}"#)]
     #[test_case(r#"[]"#, r#"[]"# ; r#"Check that evaluation hasn't broken empty collections"#)]
     #[test_case(r#"{}"#, r#"{}"# ; r#"Test 10: {} => {}"#)]
+    /// Test for successful evaluation
     fn step_2_tester_eval_success(input: &str, output: &str) {
         let result = eval(
             *reader::read_str(input).expect("Invalid Input"),
@@ -581,12 +633,12 @@ mod tests {
         assert_eq!(result.unwrap().to_string(), output);
     }
     #[test_case(r#"(abc 1 2 3)"#, r#""# ; r#"Test 7: (abc 1 2 3) => "#)]
-    fn step_2_tester_eval_failure(input: &str, error: &str) {
+    /// Check for failing evaluation
+    fn step_2_tester_eval_failure(input: &str, _error: &str) {
         let result = eval(
             *reader::read_str(input).expect("Invalid Input"),
             &mut create_test_environment(),
         );
         assert!(result.is_err());
-        // assert_eq!(result.unwrap_err(), error);
     }
 }
