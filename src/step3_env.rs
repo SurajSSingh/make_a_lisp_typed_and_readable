@@ -17,7 +17,7 @@ pub(crate) mod reader {
 
     use logos::Logos;
 
-    use super::MalResult;
+    use super::{env::Env, MalResult};
 
     #[derive(Logos, Clone, Debug, PartialEq)]
     #[logos(skip r"[ \t\n\f]+")]
@@ -115,7 +115,7 @@ pub(crate) mod reader {
         }
     }
 
-    #[derive(PartialEq, Clone, Debug)]
+    #[derive(Clone)]
     /// Basic Types with in the interpreter
     pub enum MalType {
         Nil,
@@ -136,7 +136,32 @@ pub(crate) mod reader {
         List(VecDeque<MalType>),
         Vector(Vec<MalType>),
         Map(Vec<(MalType, MalType)>),
-        Func(String, fn(VecDeque<MalType>) -> MalResult),
+        Func(String, fn(VecDeque<MalType>, &mut Env) -> MalResult),
+    }
+
+    impl std::fmt::Debug for MalType {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Nil => write!(f, "Nil"),
+                Self::True => write!(f, "True"),
+                Self::False => write!(f, "False"),
+                Self::Quote(arg0) => f.debug_tuple("Quote").field(arg0).finish(),
+                Self::Quasiquote(arg0) => f.debug_tuple("Quasiquote").field(arg0).finish(),
+                Self::Unquote(arg0) => f.debug_tuple("Unquote").field(arg0).finish(),
+                Self::SpliceUnquote(arg0) => f.debug_tuple("SpliceUnquote").field(arg0).finish(),
+                Self::Deref(arg0) => f.debug_tuple("Deref").field(arg0).finish(),
+                Self::Meta(arg0) => f.debug_tuple("Meta").field(arg0).finish(),
+                Self::Number(arg0) => f.debug_tuple("Number").field(arg0).finish(),
+                Self::Keyword(arg0) => f.debug_tuple("Keyword").field(arg0).finish(),
+                Self::SpecialForm(arg0) => f.debug_tuple("SpecialForm").field(arg0).finish(),
+                Self::Symbol(arg0) => f.debug_tuple("Symbol").field(arg0).finish(),
+                Self::String(arg0) => f.debug_tuple("String").field(arg0).finish(),
+                Self::List(arg0) => f.debug_tuple("List").field(arg0).finish(),
+                Self::Vector(arg0) => f.debug_tuple("Vector").field(arg0).finish(),
+                Self::Map(arg0) => f.debug_tuple("Map").field(arg0).finish(),
+                Self::Func(arg0, _arg1) => f.debug_tuple("Func").field(arg0).finish(),
+            }
+        }
     }
 
     impl Display for MalType {
@@ -646,19 +671,7 @@ fn eval(expr: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                     }
                 }
                 _ => match eval_ast(mal, env)? {
-                    MalType::Func(_, func) => {
-                        let args = v.into_iter().map(|val| eval(val, env)).try_fold(
-                            VecDeque::new(),
-                            |mut args, a| match a {
-                                Ok(val) => {
-                                    args.push_back(val);
-                                    Ok(args)
-                                }
-                                Err(err) => Err(err),
-                            },
-                        )?;
-                        func(args).map_err(ReplError::Eval)
-                    }
+                    MalType::Func(_, func) => func(v, env).map_err(ReplError::Eval),
                     non_func => eval_error(&format!("Couldn't apply from result of {}", non_func)),
                 },
             }
@@ -672,32 +685,48 @@ fn print(value: Ast) {
     println!("{}", printer::pr_str(value))
 }
 
-macro_rules! env_set {
-    ($repl_env:ident, $op:expr => $fn:expr) => {
-        $repl_env.set($op.to_string(), MalType::Func($op.to_string(), $fn));
+macro_rules! env_set_op {
+    ($op:path, $name:expr, $sym:expr => $repl_env:ident) => {
+        $repl_env.set(
+            $sym.to_string(),
+            MalType::Func(stringify!($op).to_string(), |args, env| {
+                if args.len() < 2 {
+                    return Err("Not enough arguments for ".to_string() + $name);
+                }
+                match (&args[0], &args[1]) {
+                    (MalType::Number(x), MalType::Number(y)) => Ok(MalType::Number($op(x, y))),
+                    (s1 @ MalType::Symbol(_), b) => {
+                        if let Ok(MalType::Number(x)) = eval(s1.clone(), env) {
+                            match b {
+                                MalType::Number(y) => Ok(MalType::Number($op(x, y))),
+                                s2 @ MalType::Symbol(_) => {
+                                    if let Ok(MalType::Number(y)) = eval(s2.clone(), env) {
+                                        Ok(MalType::Number($op(x, y)))
+                                    } else {
+                                        Err(format!("Symbol not a number: {:?}", s2))
+                                    }
+                                }
+                                _ => Err($name.to_string()
+                                    + " function does not work on non-number types"),
+                            }
+                        } else {
+                            Err(format!("Symbol not a number: {:?}", s1))
+                        }
+                    }
+                    _ => Err($name.to_string() + " function does not work on non-number types"),
+                }
+            }),
+        );
     };
 }
 
 /// Creates a new environment with basic 4 function arithmetic operations
 fn create_default_environment() -> Env {
     let mut env = Env::new();
-
-    env_set!(env, "+" => |args| match (&args[0], &args[1]) {
-        (MalType::Number(x), MalType::Number(y)) => Ok(MalType::Number(x + y)),
-        _ => Err("Add function does not work on non-number types".to_string()),
-    });
-    env_set!(env, "-" => |args| match (&args[0], &args[1]) {
-        (MalType::Number(x), MalType::Number(y)) => Ok(MalType::Number(x - y)),
-        _ => Err("Sub function does not work on non-number types".to_string()),
-    });
-    env_set!(env, "*" => |args| match (&args[0], &args[1]) {
-        (MalType::Number(x), MalType::Number(y)) => Ok(MalType::Number(x * y)),
-        _ => Err("Mul function does not work on non-number types".to_string()),
-    });
-    env_set!(env, "/" => |args| match (&args[0], &args[1]) {
-        (MalType::Number(x), MalType::Number(y)) => Ok(MalType::Number(x / y)),
-        _ => Err("Div function does not work on non-number types".to_string()),
-    });
+    env_set_op!(std::ops::Add::add, "Addition", "+" => env);
+    env_set_op!(std::ops::Sub::sub, "Subtract", "-" => env);
+    env_set_op!(std::ops::Mul::mul, "Multiply", "*" => env);
+    env_set_op!(std::ops::Div::div, "Divide",   "/" => env);
     env
 }
 
