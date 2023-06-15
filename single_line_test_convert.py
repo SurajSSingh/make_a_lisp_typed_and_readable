@@ -12,7 +12,8 @@ if __name__ == '__main__':
         while not lines[index] \
         or lines[index].startswith(";>>") \
         or lines[index].startswith(";;;") \
-        or lines[index].startswith(";; -"):
+        or lines[index].startswith(";; -") \
+        or lines[index].rstrip() == ";;":
             index += 1
         description = ""
         if lines[index].startswith(";; "):
