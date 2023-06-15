@@ -1,9 +1,12 @@
+#![deny(missing_docs)]
 use std::collections::VecDeque;
 
 use reader::{MalType, ParseError};
 use rustyline::{error::ReadlineError, DefaultEditor};
 
 use crate::step3_env::env::Env;
+
+use self::reader::SpecialKeyword;
 
 /// Either results in a MAL type or gives back a message for an error
 pub type MalResult = Result<MalType, String>;
@@ -97,7 +100,22 @@ pub(crate) mod reader {
         }
     }
 
-    #[derive(PartialEq, Clone, Debug, PartialOrd)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum SpecialKeyword {
+        Def,
+        Let,
+    }
+
+    impl Display for SpecialKeyword {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                SpecialKeyword::Def => f.write_str("def!"),
+                SpecialKeyword::Let => f.write_str("let*"),
+            }
+        }
+    }
+
+    #[derive(PartialEq, Clone, Debug)]
     /// Basic Types with in the interpreter
     pub enum MalType {
         Nil,
@@ -111,6 +129,8 @@ pub(crate) mod reader {
         Meta(Vec<MalType>),
         Number(f64),
         Keyword(String),
+        /// Holds any special symbols
+        SpecialForm(SpecialKeyword),
         Symbol(String),
         String(String),
         List(VecDeque<MalType>),
@@ -134,6 +154,7 @@ pub(crate) mod reader {
                 MalType::True => f.write_str("true"),
                 MalType::False => f.write_str("false"),
                 MalType::String(s) => f.write_str(s),
+                MalType::SpecialForm(word) => f.write_str(&word.to_string()),
                 MalType::Meta(m) => f.write_str(&format!(
                     "(with-meta {})",
                     m.iter()
@@ -362,7 +383,7 @@ pub(crate) mod reader {
         }) == (true, false)
     }
 
-    /// Read an atom from the given lexed list, can be either string or atom
+    /// Read an atom from the given lexed list, can be either string, special keyword, or symbol
     ///
     ///
     fn read_atom<'t>(
@@ -385,6 +406,8 @@ pub(crate) mod reader {
                             "nil" => Ok((MalType::Nil, lex_list)),
                             "true" => Ok((MalType::True, lex_list)),
                             "false" => Ok((MalType::False, lex_list)),
+                            "def!" => Ok((MalType::SpecialForm(SpecialKeyword::Def), lex_list)),
+                            "let*" => Ok((MalType::SpecialForm(SpecialKeyword::Let), lex_list)),
                             c if c.starts_with(':') => {
                                 Ok((MalType::Keyword(atom.to_string()), lex_list))
                             }
@@ -556,7 +579,7 @@ fn eval(expr: MalType, env: &mut Env) -> Result<MalType, ReplError> {
             };
 
             match mal {
-                MalType::Symbol(s) if s == "def!" => {
+                MalType::SpecialForm(SpecialKeyword::Def) => {
                     let Some(MalType::Symbol(key)) = v.pop_front() else {
                         return eval_error("No symbol to define");
                     };
@@ -567,7 +590,7 @@ fn eval(expr: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                     env.set(key, evaluated_val.clone());
                     Ok(evaluated_val)
                 }
-                MalType::Symbol(s) if s == "let*" => {
+                MalType::SpecialForm(SpecialKeyword::Let) => {
                     let mut new_env = Env::with_outer(Box::new(env.clone()));
                     match v.pop_front() {
                         Some(MalType::List(binds)) => {
@@ -655,6 +678,7 @@ macro_rules! env_set {
     };
 }
 
+/// Creates a new environment with basic 4 function arithmetic operations
 fn create_default_environment() -> Env {
     let mut env = Env::new();
 
@@ -716,17 +740,7 @@ pub fn main() -> rustyline::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_case::test_case;
 
-    // #[test_case(&[ r#"(+ 1 2)"#, r#"(/ (- (+ 5 (* 2 3)) 3) 4)"# ], &[ Ok(r#"3"#), Ok(r#"2"#) ] ; r#"Testing REPL_ENV"#)]
-    // #[test_case(&[ r#"(def! x 3)"#, r#"x"#, r#"(def! x 4)"#, r#"x"#, r#"(def! y (+ 1 7))"#, r#"y"# ], &[ Ok(r#"3"#), Ok(r#"3"#), Ok(r#"4"#), Ok(r#"4"#), Ok(r#"8"#), Ok(r#"8"#) ] ; r#"Testing def!"#)]
-    // #[test_case(&[ r#"(def! mynum 111)"#, r#"(def! MYNUM 222)"#, r#"mynum"#, r#"MYNUM"# ], &[ Ok(r#"111"#), Ok(r#"222"#), Ok(r#"111"#), Ok(r#"222"#) ] ; r#"Verifying symbols are case-sensitive"#)]
-    // #[test_case(&[ r#"(abc 1 2 3)"#, r#"(def! w 123)\n(def! w (abc))\nw"# ], &[ Err(r#"*\'?abc\'? not found.*"#), Ok(r#"123"#) ] ; r#"Check that error aborts def!"#)]
-    // #[test_case(&[ r#"(def! a 4)"#, r#"(let* (q 9) q)"#, r#"(let* (q 9) a)"#, r#"(let* (z 2) (let* (q 9) a))"# ], &[ Ok(r#"4"#), Ok(r#"9"#), Ok(r#"4"#), Ok(r#"4"#) ] ; r#"Testing outer environment"#)]
-    // #[test_case(&[ r#"(let* [z 9] z)"#, r#"(let* [p (+ 2 3) q (+ 2 p)] (+ p q))"# ], &[ Ok(r#"9"#), Ok(r#"12"#) ] ; r#"Testing let* with vector bindings"#)]
-    // #[test_case(&[ r#"(let* (a 5 b 6) [3 4 a [b 7] 8])"# ], &[ Ok(r#"[3 4 5 [6 7] 8]"#) ] ; r#"Testing vector evaluation"#)]
-    // /// Test for successful evaluation
-    // #[test_case(&[ r#"(let* (z 9) z)"#, r#"(let* (x 9) x)"#, r#"x"#, r#"(let* (z (+ 2 3)) (+ 1 z))"#, r#"(let* (p (+ 2 3) q (+ 2 p)) (+ p q))"#, r#"(def! y (let* (z 7) z))\ny"# ], &[ Ok(r#"9"#), Ok(r#"9"#), Ok(r#"4"#), Ok(r#"6"#), Ok(r#"12"#), Ok(r#"7"#) ] ; r#"Testing let*"#)]
     #[test]
     fn step_3_eval_tester() {
         let file = include_str!("../tests/step3_env.mal");
@@ -753,17 +767,5 @@ mod tests {
                 );
             }
         }
-        // for (input, output) in inputs.iter().zip(outputs) {
-        //     let result = eval(
-        //         *reader::read_str(input).expect("Invalid Input"),
-        //         &mut test_env,
-        //     );
-        //     if let Ok(success) = result {
-        //         assert!(output.is_ok());
-        //         assert_eq!(success.to_string(), output.unwrap());
-        //     } else {
-        //         assert!(output.is_err());
-        //     }
-        // }
     }
 }
