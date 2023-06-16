@@ -6,7 +6,7 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 
 use env::Env;
 
-use self::reader::SpecialKeyword;
+use self::{core::create_core_environment, reader::SpecialKeyword};
 
 /// Either results in a MAL type or gives back a message for an error
 pub type MalResult = Result<MalType, String>;
@@ -124,9 +124,8 @@ pub(crate) mod reader {
     #[derive(Clone)]
     /// Basic Types with in the interpreter
     pub enum MalType {
-        Nil,
-        True,
-        False,
+        Nil(()),
+        Bool(bool),
         Quote(Box<MalType>),
         Quasiquote(Box<MalType>),
         Unquote(Box<MalType>),
@@ -146,12 +145,39 @@ pub(crate) mod reader {
         UserFunc(Vec<String>, Box<MalType>, Env),
     }
 
+    impl PartialEq for MalType {
+        fn eq(&self, other: &Self) -> bool {
+            match (self, other) {
+                (Self::Nil(l0), Self::Nil(r0)) => l0 == r0,
+                (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
+                (Self::Quote(l0), Self::Quote(r0)) => l0 == r0,
+                (Self::Quasiquote(l0), Self::Quasiquote(r0)) => l0 == r0,
+                (Self::Unquote(l0), Self::Unquote(r0)) => l0 == r0,
+                (Self::SpliceUnquote(l0), Self::SpliceUnquote(r0)) => l0 == r0,
+                (Self::Deref(l0), Self::Deref(r0)) => l0 == r0,
+                (Self::Meta(l0), Self::Meta(r0)) => l0 == r0,
+                (Self::Number(l0), Self::Number(r0)) => l0 == r0,
+                (Self::Keyword(l0), Self::Keyword(r0)) => l0 == r0,
+                (Self::SpecialForm(l0), Self::SpecialForm(r0)) => l0 == r0,
+                (Self::Symbol(l0), Self::Symbol(r0)) => l0 == r0,
+                (Self::String(l0), Self::String(r0)) => l0 == r0,
+                (Self::List(l0), Self::List(r0)) => l0 == r0,
+                (Self::Vector(l0), Self::Vector(r0)) => l0 == r0,
+                (Self::Map(l0), Self::Map(r0)) => l0 == r0,
+                (Self::LiftedFunc(l0, l1), Self::LiftedFunc(r0, r1)) => l0 == r0,
+                (Self::UserFunc(l0, l1, l2), Self::UserFunc(r0, r1, r2)) => {
+                    l0 == r0 && l1 == r1 && l2 == r2
+                }
+                _ => false,
+            }
+        }
+    }
+
     impl std::fmt::Debug for MalType {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Self::Nil => write!(f, "Nil"),
-                Self::True => write!(f, "True"),
-                Self::False => write!(f, "False"),
+                Self::Nil(()) => write!(f, "Nil"),
+                MalType::Bool(arg0) => f.debug_tuple("Bool").field(arg0).finish(),
                 Self::Quote(arg0) => f.debug_tuple("Quote").field(arg0).finish(),
                 Self::Quasiquote(arg0) => f.debug_tuple("Quasiquote").field(arg0).finish(),
                 Self::Unquote(arg0) => f.debug_tuple("Unquote").field(arg0).finish(),
@@ -188,9 +214,8 @@ pub(crate) mod reader {
                 MalType::Number(n) => f.write_str(&n.to_string()),
                 MalType::Keyword(k) => f.write_str(k),
                 MalType::Symbol(s) => f.write_str(s),
-                MalType::Nil => f.write_str("nil"),
-                MalType::True => f.write_str("true"),
-                MalType::False => f.write_str("false"),
+                MalType::Nil(()) => f.write_str("nil"),
+                MalType::Bool(b) => f.write_fmt(format_args!("{b}")),
                 MalType::String(s) => f.write_str(s),
                 MalType::SpecialForm(word) => f.write_str(&word.to_string()),
                 MalType::Meta(m) => f.write_str(&format!(
@@ -226,6 +251,15 @@ pub(crate) mod reader {
                 }
                 MalType::UserFunc(_params, _body, _env) => f.write_str("#<function>"),
             }
+        }
+    }
+    impl MalType {
+        /// Returns `true` if the mal type is [`UserFunc`].
+        ///
+        /// [`UserFunc`]: MalType::UserFunc
+        #[must_use]
+        pub fn is_user_func(&self) -> bool {
+            matches!(self, Self::UserFunc(..))
         }
     }
 
@@ -444,9 +478,9 @@ pub(crate) mod reader {
                         Ok((MalType::Number(num), lex_list))
                     } else {
                         match atom {
-                            "nil" => Ok((MalType::Nil, lex_list)),
-                            "true" => Ok((MalType::True, lex_list)),
-                            "false" => Ok((MalType::False, lex_list)),
+                            "nil" => Ok((MalType::Nil(()), lex_list)),
+                            "true" => Ok((MalType::Bool(true), lex_list)),
+                            "false" => Ok((MalType::Bool(false), lex_list)),
                             "def!" => Ok((MalType::SpecialForm(SpecialKeyword::Def), lex_list)),
                             "let*" => Ok((MalType::SpecialForm(SpecialKeyword::Let), lex_list)),
                             "do" => Ok((MalType::SpecialForm(SpecialKeyword::Do), lex_list)),
@@ -481,7 +515,7 @@ pub(crate) mod env {
 
     use super::reader::MalType;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, PartialEq)]
     pub struct Env {
         outer: Option<Box<Env>>,
         data: HashMap<String, MalType>,
@@ -504,6 +538,7 @@ pub(crate) mod env {
             }
         }
 
+        /// Create a new environment with outer (parent) environment and bindings (parameters to expressions)
         pub fn with_outer_and_bindings(
             outer: Box<Env>,
             binds: Vec<String>,
@@ -515,10 +550,38 @@ pub(crate) mod env {
             }
         }
 
+        /// Create a new environment with outer (parent) environment and bindings (parameters to expressions).
+        /// Data will also includes items not already found in outer environment.
+        pub fn intersection_bindings(
+            outer: Box<Env>,
+            other: &Env,
+            binds: Vec<String>,
+            exprs: Vec<MalType>,
+        ) -> Self {
+            Self {
+                outer: Some(outer.clone()),
+                data: other
+                    .data
+                    .iter()
+                    // Skip over anything found in outer environment
+                    .filter(|(k, _)| !outer.data.contains_key(&(*k).clone()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .chain(binds.into_iter().zip(exprs))
+                    .collect(),
+            }
+        }
+
         /// Takes a symbol key and a mal value, adds it to the environment
         pub fn set(&mut self, key: String, val: MalType) -> &mut Self {
             self.data.insert(key, val);
             self
+        }
+
+        pub fn set_symbol(&mut self, key: MalType, val: MalType) -> &mut Self {
+            match key {
+                MalType::Symbol(s) => self.set(s, val),
+                _ => self,
+            }
         }
 
         /// Search the environment or its outer environment for a key
@@ -532,6 +595,13 @@ pub(crate) mod env {
             }
         }
 
+        pub fn find_symbol(&self, key: MalType) -> Option<&Self> {
+            match key {
+                MalType::Symbol(s) => self.find(s),
+                _ => None,
+            }
+        }
+
         /// Gets the value from the environment given a key or an error for it not being found
         pub fn get(&self, key: String) -> Result<MalType, String> {
             if let Some(env) = self.find(key.clone()) {
@@ -540,6 +610,195 @@ pub(crate) mod env {
                 Err(format!("'{key}' not found"))
             }
         }
+
+        pub fn get_symbol(&self, key: MalType) -> Result<MalType, String> {
+            match key {
+                MalType::Symbol(s) => self.get(s),
+                _ => Err("Not a symbol".to_string()),
+            }
+        }
+    }
+}
+
+pub(crate) mod core {
+    use std::collections::VecDeque;
+
+    use super::{env::Env, print, reader::MalType, Ast, MalResult};
+
+    pub fn prn(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        if let Some(expr) = args.get(0) {
+            print(Ast::new(expr.clone()))
+        };
+        Ok(MalType::Nil(()))
+    }
+
+    pub fn to_list(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        Ok(MalType::List(args))
+    }
+
+    pub fn is_list(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        match args.get(0) {
+            Some(MalType::List(_)) => Ok(MalType::Bool(true)),
+            Some(_) => Ok(MalType::Bool(false)),
+            None => Err("Not enough arguments".to_string()),
+        }
+    }
+
+    pub fn is_empty(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        match args.get(0) {
+            Some(MalType::List(l)) => Ok(MalType::Bool(l.is_empty())),
+            Some(MalType::Vector(v)) => Ok(MalType::Bool(v.is_empty())),
+            Some(MalType::Map(m)) => Ok(MalType::Bool(m.is_empty())),
+            Some(_) => Err("Is emptyonly works only with non-atomics types".to_string()),
+            None => Err("Not enough arguments".to_string()),
+        }
+    }
+
+    pub fn count(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        match args.get(0) {
+            Some(MalType::List(l)) => Ok(MalType::Number(l.len() as f64)),
+            Some(MalType::Vector(v)) => Ok(MalType::Number(v.len() as f64)),
+            Some(MalType::Map(m)) => Ok(MalType::Number(m.len() as f64)),
+            Some(MalType::Nil(_)) => Ok(MalType::Number(0.0)),
+            Some(_) => Err("Count only works only with non-atomics types and nil".to_string()),
+            None => Err("Not enough arguments".to_string()),
+        }
+    }
+
+    macro_rules! set_lift_op {
+        // Unary operator
+        ($repl_env:ident add $sym:expr, $func:path : $in_t1: path => $out_type:path) => {
+            $repl_env.set(
+                $sym.to_string(),
+                MalType::LiftedFunc(stringify!($func).to_string(), |args, env| {
+                    let func_name = stringify!($func).split("::").last().unwrap();
+                    if args.len() < 1 {
+                        return Err(format!("Not enough arguments for {func_name}"));
+                    }
+                    match &args[0] {
+                        $in_t1(x) => Ok($out_type($func(x))),
+                        MalType::Symbol(s) => match env.get(s) {
+                            $in_t1(x) => Ok($out_type($func(x))),
+                            _ => Err(format!(
+                                "func_name} function does not work for given types."
+                            )),
+                        },
+                        _ => Err(format!(
+                            "func_name} function does not work for given types."
+                        )),
+                    }
+                }),
+            )
+        };
+        // Binary operator - non default
+        ($repl_env:ident += $sym:expr, $func:path : $($in_t1: path, $in_t2: path)|+ => $out_type:path) => {
+            $repl_env.set(
+                $sym.to_string(),
+                MalType::LiftedFunc(stringify!($func).to_string(), |args, env| {
+                    let func_name = stringify!($func).split("::").last().unwrap();
+                    if args.len() < 2 {
+                        return Err(format!("Not enough arguments for {func_name}"));
+                    }
+                    match (&args[0], &args[1]) {
+                        $(($in_t1(x), $in_t2(y)) => Ok($out_type($func(x, y)))),+,
+                        $((MalType::Symbol(s1), $in_t2(y)) => match env.get(s1.to_string()) {
+                            Ok($in_t1(x)) => Ok($out_type($func(&x, y))),
+                            Ok(_) => Err(format!(
+                                "{func_name} function does not work for given types."
+                            )),
+                            Err(err) => Err(err),
+                        }),+
+                        $(($in_t1(x), MalType::Symbol(s2)) => match env.get(s2.to_string()) {
+                            Ok($in_t2(y)) => Ok($out_type($func(x, &y))),
+                            Ok(_) => Err(format!(
+                                "{func_name} function does not work for given types."
+                            )),
+                            Err(err) => Err(err),
+                        }),+
+                        (MalType::Symbol(s1), MalType::Symbol(s2)) => match env.get(s1.to_string()) {
+                            $(Ok($in_t1(x)) => match env.get(s2.to_string()){
+                                Ok($in_t2(y)) =>Ok($out_type($func(&x, &y))),
+                                Ok(_) => Err(format!(
+                                    "{func_name} function does not work for given types."
+                                )),
+                                Err(err) => Err(err),
+                            }),+
+                            Ok(_) => Err(format!(
+                                "{func_name} function does not work for given types."
+                            )),
+                            Err(err) => Err(err),
+                        }
+                        _ => Err(format!(
+                            "{func_name} function does not work for given types."
+                        )),
+                    }
+                }),
+            )
+        };
+        // Binary operator - default
+        ($repl_env:ident += $sym:expr, $func:path : any => $out_type:path) => {
+            $repl_env.set(
+                $sym.to_string(),
+                MalType::LiftedFunc(stringify!($func).to_string(), |args, _env| {
+                    let func_name = stringify!($func).split("::").last().unwrap();
+                    if args.len() < 2 {
+                        return Err(format!("Not enough arguments for {func_name}"));
+                    }
+                    Ok($out_type($func(&args[0], &args[1])))
+                }),
+            )
+        };
+    }
+
+    macro_rules! set_core_fn {
+        ($repl_env:ident += $func:ident as $name:expr , $pretty_name:expr) => {
+            $repl_env.set(
+                $name.to_string(),
+                MalType::LiftedFunc($pretty_name.to_string(), $func),
+            );
+        };
+        ($repl_env:ident += $func:ident as $name:expr) => {
+            $repl_env.set(
+                $name.to_string(),
+                MalType::LiftedFunc(stringify!($func).to_string(), $func),
+            );
+        };
+        ($repl_env:ident += $func:ident , $pretty_name:expr) => {
+            $repl_env.set(
+                stringify!($func).to_string(),
+                MalType::LiftedFunc($pretty_name.to_string(), $func),
+            );
+        };
+        ($repl_env:ident += $func:ident) => {
+            $repl_env.set(
+                stringify!($func).to_string(),
+                MalType::LiftedFunc(stringify!($func).to_string(), $func),
+            );
+        };
+    }
+
+    /// Creates a new environment with basic 4 function arithmetic operations
+    pub fn create_core_environment() -> Env {
+        let mut env = Env::new();
+        // Lifted operations from Rust
+        set_lift_op!(env += "+", std::ops::Add::add : MalType::Number, MalType::Number => MalType::Number);
+        set_lift_op!(env += "-", std::ops::Sub::sub : MalType::Number, MalType::Number => MalType::Number);
+        set_lift_op!(env += "*", std::ops::Mul::mul : MalType::Number, MalType::Number => MalType::Number);
+        set_lift_op!(env += "/", std::ops::Div::div : MalType::Number, MalType::Number => MalType::Number);
+        set_lift_op!(env += ">", std::cmp::PartialOrd::gt: MalType::Number, MalType::Number => MalType::Bool);
+        set_lift_op!(env += "<", std::cmp::PartialOrd::lt : MalType::Number, MalType::Number => MalType::Bool);
+        set_lift_op!(env += ">=", std::cmp::PartialOrd::ge : MalType::Number, MalType::Number => MalType::Bool);
+        set_lift_op!(env += "<=", std::cmp::PartialOrd::le : MalType::Number, MalType::Number => MalType::Bool);
+        set_lift_op!(env += "=", std::cmp::PartialEq::eq :  any => MalType::Bool);
+
+        // Pre-defined core functions
+        set_core_fn!(env += prn, "print");
+        set_core_fn!(env += to_list as "list", "make list");
+        set_core_fn!(env += is_list as "list?");
+        set_core_fn!(env += is_empty as "empty?");
+        set_core_fn!(env += count);
+
+        env
     }
 }
 /// Abstract syntax tree
@@ -643,6 +902,18 @@ fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                     };
                     let evaluated_val = eval(val, env)?;
                     env.set(key, evaluated_val.clone());
+                    // env.set(key.clone(), evaluated_val.clone());
+                    // // Special case for user functions
+                    // // If recursive, it shoud have a reference to itself in environment
+                    // if evaluated_val.is_user_func() {
+                    //     // Extract user function
+                    //     if let MalType::UserFunc(params, body, _) =
+                    //         env.get(key.clone()).map_err(ReplError::Eval)?
+                    //     {
+                    //         // Re-add user function with updated environment
+                    //         env.set(key, MalType::UserFunc(params, body, env.clone()));
+                    //     }
+                    // }
                     Ok(evaluated_val)
                 }
                 MalType::SpecialForm(SpecialKeyword::Let) => {
@@ -701,21 +972,22 @@ fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                     }
                 }
                 MalType::SpecialForm(SpecialKeyword::Do) => {
-                    ast_expr
-                        .into_iter()
-                        .try_fold(MalType::Nil, |_curr, e| match eval_ast(e, env) {
-                            Ok(res) => Ok(res),
-                            Err(e) => Err(e),
-                        })
+                    match eval_ast(MalType::List(ast_expr), env)? {
+                        MalType::List(l) => Ok(l
+                            .back()
+                            .map(|last| last.to_owned())
+                            .unwrap_or(MalType::Nil(()))),
+                        _ => eval_error("Expected list"),
+                    }
                 }
                 MalType::SpecialForm(SpecialKeyword::If) => {
                     let Some(cond) = ast_expr.pop_front() else {
                         return eval_error("No condition for if form given");
                     };
                     match eval(cond, env) {
-                        Ok(MalType::Nil | MalType::False) => {
+                        Ok(MalType::Nil(()) | MalType::Bool(false)) => {
                             ast_expr.pop_front();
-                            eval(ast_expr.pop_front().unwrap_or(MalType::Nil), env)
+                            eval(ast_expr.pop_front().unwrap_or(MalType::Nil(())), env)
                         }
                         Ok(_) => {
                             if let Some(true_branch) = ast_expr.pop_front() {
@@ -766,8 +1038,9 @@ fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                                 func(list, env).map_err(ReplError::Eval)
                             }
                             MalType::UserFunc(params, body, outer_env) => {
-                                let mut fn_env = Env::with_outer_and_bindings(
+                                let mut fn_env = Env::intersection_bindings(
                                     Box::new(outer_env),
+                                    env,
                                     params,
                                     list.into(),
                                 );
@@ -789,51 +1062,6 @@ fn print(value: Ast) {
     println!("{}", printer::pr_str(value))
 }
 
-macro_rules! env_set_op {
-    ($op:path, $name:expr, $sym:expr => $repl_env:ident) => {
-        $repl_env.set(
-            $sym.to_string(),
-            MalType::LiftedFunc(stringify!($op).to_string(), |args, env| {
-                if args.len() < 2 {
-                    return Err("Not enough arguments for ".to_string() + $name);
-                }
-                match (&args[0], &args[1]) {
-                    (MalType::Number(x), MalType::Number(y)) => Ok(MalType::Number($op(x, y))),
-                    (s1 @ MalType::Symbol(_), b) => {
-                        if let Ok(MalType::Number(x)) = eval(s1.clone(), env) {
-                            match b {
-                                MalType::Number(y) => Ok(MalType::Number($op(x, y))),
-                                s2 @ MalType::Symbol(_) => {
-                                    if let Ok(MalType::Number(y)) = eval(s2.clone(), env) {
-                                        Ok(MalType::Number($op(x, y)))
-                                    } else {
-                                        Err(format!("Symbol not a number: {:?}", s2))
-                                    }
-                                }
-                                _ => Err($name.to_string()
-                                    + " function does not work on non-number types"),
-                            }
-                        } else {
-                            Err(format!("Symbol not a number: {:?}", s1))
-                        }
-                    }
-                    _ => Err($name.to_string() + " function does not work on non-number types"),
-                }
-            }),
-        );
-    };
-}
-
-/// Creates a new environment with basic 4 function arithmetic operations
-fn create_default_environment() -> Env {
-    let mut env = Env::new();
-    env_set_op!(std::ops::Add::add, "Addition", "+" => env);
-    env_set_op!(std::ops::Sub::sub, "Subtract", "-" => env);
-    env_set_op!(std::ops::Mul::mul, "Multiply", "*" => env);
-    env_set_op!(std::ops::Div::div, "Divide",   "/" => env);
-    env
-}
-
 /// Runs the read, evaluate, and print functions in that order
 fn rep(rl: &mut DefaultEditor, env: &mut Env) -> Result<(), ReplError> {
     let ast = read(rl)?;
@@ -845,7 +1073,7 @@ fn rep(rl: &mut DefaultEditor, env: &mut Env) -> Result<(), ReplError> {
 /// Runs the repl
 pub fn main() -> rustyline::Result<()> {
     let mut rl = DefaultEditor::new()?;
-    let mut repl_env = create_default_environment();
+    let mut repl_env = create_core_environment();
     loop {
         if let Err(err) = rep(&mut rl, &mut repl_env) {
             match err {
@@ -872,13 +1100,29 @@ pub fn main() -> rustyline::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{core::create_core_environment, *};
+    static mut OUTPUT: Vec<String> = vec![];
+
+    pub fn simulate_print(args: VecDeque<MalType>, _env: &mut Env) -> Result<MalType, String> {
+        match args.get(0) {
+            Some(expr) => {
+                unsafe { OUTPUT.push(expr.to_string()) };
+                Ok(MalType::Nil(()))
+            }
+            None => Err("Not enough arguments".to_string()),
+        }
+    }
 
     #[test]
     fn step_4_eval_tester() {
         let file = include_str!("../tests/step4_if_fn_do.mal");
-        let mut test_env = create_default_environment();
-        let mut result = Ok(MalType::Nil);
+        let mut test_env = create_core_environment();
+        test_env.set(
+            "prn".to_string(),
+            MalType::LiftedFunc("Simulate Print".to_string(), simulate_print),
+        );
+        let mut result = Ok(MalType::Nil(()));
+        let mut current_out_index = 0;
         for (number, line) in file.lines().enumerate() {
             if line.is_empty() || line.starts_with(";;") || line.starts_with(";>>>") {
                 continue;
@@ -898,8 +1142,16 @@ mod tests {
                 assert!(&result.is_ok());
                 // assert_eq!(result.unwrap().to_string(), line.trim_start_matches(";=>"));
             } else if line.starts_with(";/") {
-                assert!(result.is_err(), "See line {number} for error");
+                match unsafe { OUTPUT.get(current_out_index) } {
+                    Some(output) => {
+                        assert!(line.contains(output), "See line {number} for error");
+                    }
+                    None => assert!(result.is_err(), "See line {number} for error"),
+                }
+                current_out_index += 1;
             } else {
+                unsafe { OUTPUT.clear() };
+                current_out_index = unsafe { OUTPUT.len() };
                 result = eval(
                     *reader::read_str(line).expect("Invalid Input"),
                     &mut test_env,
