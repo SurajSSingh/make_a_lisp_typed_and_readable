@@ -6,7 +6,10 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 
 use env::Env;
 
-use self::{core::create_core_environment, reader::SpecialKeyword};
+use self::{
+    core::{add_premade_lisp_fn_to, create_core_environment},
+    reader::SpecialKeyword,
+};
 
 /// Either results in a MAL type or gives back a message for an error
 pub type MalResult = Result<MalType, String>;
@@ -216,7 +219,7 @@ pub(crate) mod reader {
                 MalType::Symbol(s) => f.write_str(s),
                 MalType::Nil(()) => f.write_str("nil"),
                 MalType::Bool(b) => f.write_fmt(format_args!("{b}")),
-                MalType::String(s) => f.write_str(s),
+                MalType::String(s) => f.write_fmt(format_args!("\"{s}\"")),
                 MalType::SpecialForm(word) => f.write_str(&word.to_string()),
                 MalType::Meta(m) => f.write_str(&format!(
                     "(with-meta {})",
@@ -468,7 +471,44 @@ pub(crate) mod reader {
             match token {
                 Token::StringTok(string) => {
                     if string.len() > 1 && string.ends_with('\"') && check_string(string) {
-                        Ok((MalType::String(string.to_string()), lex_list))
+                        Ok((
+                            MalType::String(
+                                string[1..string.len() - 1]
+                                    .chars()
+                                    .fold(
+                                        (String::new(), false),
+                                        |(mut str, previous_backslash), ch| match (
+                                            ch,
+                                            previous_backslash,
+                                        ) {
+                                            ('n', true) => {
+                                                str.push('\n');
+                                                (str, false)
+                                            }
+                                            ('"', true) => {
+                                                str.push('\"');
+                                                (str, false)
+                                            }
+                                            ('\\', true) => {
+                                                str.push('\\');
+                                                (str, false)
+                                            }
+                                            (c, true) => {
+                                                str.push('\\');
+                                                str.push(c);
+                                                (str, false)
+                                            }
+                                            ('\\', false) => (str, true),
+                                            (c, false) => {
+                                                str.push(c);
+                                                (str, false)
+                                            }
+                                        },
+                                    )
+                                    .0,
+                            ),
+                            lex_list,
+                        ))
                     } else {
                         Err(ParseError::UnbalancedParen)
                     }
@@ -502,11 +542,32 @@ pub(crate) mod reader {
 }
 
 pub(crate) mod printer {
-    use super::Ast;
+    use super::MalType;
 
     /// Print out the AST expression
-    pub fn pr_str(ast: Ast) -> String {
-        ast.expr.to_string()
+    pub fn pr_str(ast: MalType, print_readably: bool) -> String {
+        match ast {
+            super::reader::MalType::String(ref s) if print_readably => {
+                // dbg!(s);
+                format!(
+                    r#""{}""#,
+                    s.escape_debug()
+                        .map(|c| match c {
+                            '\\' => "\\\\".to_string(),
+                            c => c.to_string(),
+                        })
+                        // s.chars()
+                        //     .map(|c| match c {
+                        //         '"' => "\\\"".to_string(),
+                        //         '\n' => "\\n".to_string(),
+                        //         '\\' => "\\\\".to_string(),
+                        //         _ => c.to_string(),
+                        //     })
+                        .collect::<String>()
+                )
+            }
+            _ => ast.to_string(),
+        }
     }
 }
 
@@ -538,36 +599,47 @@ pub(crate) mod env {
             }
         }
 
-        /// Create a new environment with outer (parent) environment and bindings (parameters to expressions)
+        /// Create a new environment with outer (parent) environment and bindings (parameters to expressions).
+        ///
+        /// If provided with another environment, it will add all items different from outer to data.
         pub fn with_outer_and_bindings(
             outer: Box<Env>,
             binds: Vec<String>,
             exprs: Vec<MalType>,
+            other: Option<&Env>,
         ) -> Self {
+            let mut data = HashMap::new();
+            if let Some(other) = other {
+                data.extend(
+                    other
+                        .data
+                        .iter()
+                        // Skip over anything found in outer environment
+                        .filter(|(k, _)| !outer.data.contains_key(&(*k).clone()))
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                )
+            }
+            let mut variadic_start = None;
+            for (i, b) in binds.clone().into_iter().enumerate() {
+                if b == "&" {
+                    variadic_start = Some(i + 1);
+                    break;
+                } else {
+                    data.insert(b, exprs.get(i).cloned().unwrap_or(MalType::Nil(())));
+                }
+            }
+            if let Some(start) = variadic_start {
+                if let Some(b) = binds.get(start) {
+                    data.insert(
+                        b.to_string(),
+                        // HACK: to_vec -> into (cannot go straight to vecdeque for slices)
+                        MalType::List(exprs[(start - 1)..].to_vec().into()),
+                    );
+                }
+            }
             Self {
                 outer: Some(outer),
-                data: binds.into_iter().zip(exprs).collect(),
-            }
-        }
-
-        /// Create a new environment with outer (parent) environment and bindings (parameters to expressions).
-        /// Data will also includes items not already found in outer environment.
-        pub fn intersection_bindings(
-            outer: Box<Env>,
-            other: &Env,
-            binds: Vec<String>,
-            exprs: Vec<MalType>,
-        ) -> Self {
-            Self {
-                outer: Some(outer.clone()),
-                data: other
-                    .data
-                    .iter()
-                    // Skip over anything found in outer environment
-                    .filter(|(k, _)| !outer.data.contains_key(&(*k).clone()))
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .chain(binds.into_iter().zip(exprs))
-                    .collect(),
+                data,
             }
         }
 
@@ -577,6 +649,7 @@ pub(crate) mod env {
             self
         }
 
+        /// Same as set(), but take a mal value symbol
         pub fn set_symbol(&mut self, key: MalType, val: MalType) -> &mut Self {
             match key {
                 MalType::Symbol(s) => self.set(s, val),
@@ -595,6 +668,7 @@ pub(crate) mod env {
             }
         }
 
+        /// Same as find(), but take a mal value symbol
         pub fn find_symbol(&self, key: MalType) -> Option<&Self> {
             match key {
                 MalType::Symbol(s) => self.find(s),
@@ -611,6 +685,7 @@ pub(crate) mod env {
             }
         }
 
+        /// Same as get(), but take a mal value symbol
         pub fn get_symbol(&self, key: MalType) -> Result<MalType, String> {
             match key {
                 MalType::Symbol(s) => self.get(s),
@@ -623,12 +698,39 @@ pub(crate) mod env {
 pub(crate) mod core {
     use std::collections::VecDeque;
 
-    use super::{env::Env, print, reader::MalType, Ast, MalResult};
+    use super::{env::Env, printer::pr_str, reader::MalType, rep, MalResult};
+
+    pub fn pr_dash_str(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        Ok(MalType::String(
+            args.into_iter()
+                .map(|a| pr_str(a, true))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ))
+    }
+
+    pub fn str(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        Ok(MalType::String(
+            args.into_iter()
+                .map(|a| pr_str(a, false))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ))
+    }
 
     pub fn prn(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
-        if let Some(expr) = args.get(0) {
-            print(Ast::new(expr.clone()))
+        let MalType::String(s) = pr_dash_str(args, _env)? else {
+            unreachable!("pr-str should never return a non-string")
         };
+        println!("{}", s);
+        Ok(MalType::Nil(()))
+    }
+
+    pub fn println(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
+        let MalType::String(s) = str(args, _env)? else {
+            unreachable!("str should never return a non-string")
+        };
+        println!("{}", s);
         Ok(MalType::Nil(()))
     }
 
@@ -777,6 +879,12 @@ pub(crate) mod core {
         };
     }
 
+    // macro_rules! set_lisp_fn {
+    //     ($repl_env: ident += (def! $name:ident (fn* $($params:ident)* $($body:tt)*))) => {
+    //         $repl_env.set($name, MalType::UserFunc(vec![$(stringify!($params).to_string),*],,$repl_env))
+    //     };
+    // }
+
     /// Creates a new environment with basic 4 function arithmetic operations
     pub fn create_core_environment() -> Env {
         let mut env = Env::new();
@@ -792,30 +900,27 @@ pub(crate) mod core {
         set_lift_op!(env += "=", std::cmp::PartialEq::eq :  any => MalType::Bool);
 
         // Pre-defined core functions
+        set_core_fn!(env += pr_dash_str as "pr-str");
+        set_core_fn!(env += str);
         set_core_fn!(env += prn, "print");
+        set_core_fn!(env += println);
         set_core_fn!(env += to_list as "list", "make list");
         set_core_fn!(env += is_list as "list?");
         set_core_fn!(env += is_empty as "empty?");
         set_core_fn!(env += count);
-
         env
     }
-}
-/// Abstract syntax tree
-pub struct Ast {
-    pub expr: MalType,
-}
 
-impl Ast {
-    pub fn new(expr: MalType) -> Self {
-        Self { expr }
+    /// A function that adds some predefined function as user defined function
+    pub fn add_premade_lisp_fn_to(env: &mut Env) -> &mut Env {
+        rep(String::from("(def! not (fn* (a) (if a false true)))"), env).unwrap();
+        env
     }
 }
 
 #[derive(Debug)]
 /// Union of all the types of errors in the program
 enum ReplError {
-    Readline(ReadlineError),
     Parse(ParseError),
     Eval(String),
 }
@@ -824,13 +929,20 @@ fn eval_error<T>(msg: &str) -> Result<T, ReplError> {
     Err(ReplError::Eval(msg.to_string()))
 }
 
-/// Read in from a given editor and parse it into an AST
-fn read(rl: &mut DefaultEditor) -> Result<Ast, ReplError> {
-    let line = rl.readline("user> ").map_err(ReplError::Readline)?;
-    rl.add_history_entry(line.clone())
-        .map_err(ReplError::Readline)?;
+// /// Read in from a given editor and parse it into an AST
+// fn read_old(rl: &mut DefaultEditor) -> Result<Ast, ReplError> {
+//     let line = rl.readline("user> ").map_err(ReplError::Readline)?;
+//     rl.add_history_entry(line.clone())
+//         .map_err(ReplError::Readline)?;
+//     let expr = *reader::read_str(&line).map_err(ReplError::Parse)?;
+//     Ok(Ast { expr })
+// }
+
+/// Read in a string and parse it into an AST
+fn read(line: String) -> Result<MalType, ReplError> {
     let expr = *reader::read_str(&line).map_err(ReplError::Parse)?;
-    Ok(Ast { expr })
+    // Ok(Ast { expr })
+    Ok(expr)
 }
 
 /// Evaluate an expression with a given environment
@@ -902,18 +1014,6 @@ fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                     };
                     let evaluated_val = eval(val, env)?;
                     env.set(key, evaluated_val.clone());
-                    // env.set(key.clone(), evaluated_val.clone());
-                    // // Special case for user functions
-                    // // If recursive, it shoud have a reference to itself in environment
-                    // if evaluated_val.is_user_func() {
-                    //     // Extract user function
-                    //     if let MalType::UserFunc(params, body, _) =
-                    //         env.get(key.clone()).map_err(ReplError::Eval)?
-                    //     {
-                    //         // Re-add user function with updated environment
-                    //         env.set(key, MalType::UserFunc(params, body, env.clone()));
-                    //     }
-                    // }
                     Ok(evaluated_val)
                 }
                 MalType::SpecialForm(SpecialKeyword::Let) => {
@@ -1002,23 +1102,21 @@ fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                 MalType::SpecialForm(SpecialKeyword::Fn) => {
                     let params = match ast_expr.pop_front() {
                         Some(MalType::List(l)) => {
-                            l.into_iter().try_fold(Vec::new(), |mut acc, m| {
-                                if let MalType::Symbol(s) = m {
+                            l.into_iter().try_fold(Vec::new(), |mut acc, m| match m {
+                                MalType::Symbol(s) => {
                                     acc.push(s);
                                     Ok(acc)
-                                } else {
-                                    eval_error(&format!("Not a symbol: {:?}", m))
                                 }
+                                _ => eval_error(&format!("Not a symbol: {:?}", m)),
                             })?
                         }
                         Some(MalType::Vector(v)) => {
-                            v.into_iter().try_fold(Vec::new(), |mut acc, m| {
-                                if let MalType::Symbol(s) = m {
+                            v.into_iter().try_fold(Vec::new(), |mut acc, m| match m {
+                                MalType::Symbol(s) => {
                                     acc.push(s);
                                     Ok(acc)
-                                } else {
-                                    eval_error(&format!("Not a symbol: {:?}", m))
                                 }
+                                _ => eval_error(&format!("Not a symbol: {:?}", m)),
                             })?
                         }
                         _ => return eval_error("No parameter list found"),
@@ -1038,11 +1136,11 @@ fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                                 func(list, env).map_err(ReplError::Eval)
                             }
                             MalType::UserFunc(params, body, outer_env) => {
-                                let mut fn_env = Env::intersection_bindings(
+                                let mut fn_env = Env::with_outer_and_bindings(
                                     Box::new(outer_env),
-                                    env,
                                     params,
                                     list.into(),
+                                    Some(env),
                                 );
                                 eval(*body, &mut fn_env)
                             }
@@ -1058,14 +1156,14 @@ fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
 }
 
 /// Print a given AST
-fn print(value: Ast) {
-    println!("{}", printer::pr_str(value))
+fn print(value: MalType) {
+    println!("{}", printer::pr_str(value, true))
 }
 
 /// Runs the read, evaluate, and print functions in that order
-fn rep(rl: &mut DefaultEditor, env: &mut Env) -> Result<(), ReplError> {
-    let ast = read(rl)?;
-    let res = Ast::new(eval(ast.expr, env)?);
+fn rep(line: String, env: &mut Env) -> Result<(), ReplError> {
+    let ast = read(line)?;
+    let res = eval(ast, env)?;
     print(res);
     Ok(())
 }
@@ -1074,14 +1172,20 @@ fn rep(rl: &mut DefaultEditor, env: &mut Env) -> Result<(), ReplError> {
 pub fn main() -> rustyline::Result<()> {
     let mut rl = DefaultEditor::new()?;
     let mut repl_env = create_core_environment();
+    add_premade_lisp_fn_to(&mut repl_env);
     loop {
-        if let Err(err) = rep(&mut rl, &mut repl_env) {
+        let line = match rl.readline("user> ") {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(err) => {
+                println!("{}", err);
+                break;
+            }
+        };
+        rl.add_history_entry(line.clone())?;
+        if let Err(err) = rep(line, &mut repl_env) {
             match err {
-                ReplError::Readline(ReadlineError::Eof | ReadlineError::Interrupted) => break,
-                ReplError::Readline(err) => {
-                    println!("{}", err);
-                    break;
-                }
                 ReplError::Parse(ParseError::UnbalancedParen) => {
                     println!("Unbalanced Paren");
                 }
@@ -1117,6 +1221,7 @@ mod tests {
     fn step_4_eval_tester() {
         let file = include_str!("../tests/step4_if_fn_do.mal");
         let mut test_env = create_core_environment();
+        add_premade_lisp_fn_to(&mut test_env);
         test_env.set(
             "prn".to_string(),
             MalType::LiftedFunc("Simulate Print".to_string(), simulate_print),
@@ -1131,7 +1236,7 @@ mod tests {
                 if let Ok(success) = &result {
                     assert_eq!(
                         success.to_string(),
-                        output,
+                        dbg!(output),
                         "Checking line {number} evaluates correctly"
                     );
                 } else {
