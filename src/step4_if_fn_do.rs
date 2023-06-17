@@ -151,6 +151,7 @@ pub(crate) mod reader {
     impl PartialEq for MalType {
         fn eq(&self, other: &Self) -> bool {
             match (self, other) {
+                // Default cases
                 (Self::Nil(l0), Self::Nil(r0)) => l0 == r0,
                 (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
                 (Self::Quote(l0), Self::Quote(r0)) => l0 == r0,
@@ -167,9 +168,15 @@ pub(crate) mod reader {
                 (Self::List(l0), Self::List(r0)) => l0 == r0,
                 (Self::Vector(l0), Self::Vector(r0)) => l0 == r0,
                 (Self::Map(l0), Self::Map(r0)) => l0 == r0,
-                (Self::LiftedFunc(l0, l1), Self::LiftedFunc(r0, r1)) => l0 == r0,
+                (Self::LiftedFunc(l0, _l1), Self::LiftedFunc(r0, _r1)) => l0 == r0,
                 (Self::UserFunc(l0, l1, l2), Self::UserFunc(r0, r1, r2)) => {
                     l0 == r0 && l1 == r1 && l2 == r2
+                }
+                // Special case: Equal length List and Vector
+                (Self::List(lst), Self::Vector(vec)) | (Self::Vector(vec), Self::List(lst))
+                    if lst.len() == vec.len() =>
+                {
+                    lst.iter().zip(vec.iter()).all(|(l, r)| l == r)
                 }
                 _ => false,
             }
@@ -208,61 +215,7 @@ pub(crate) mod reader {
 
     impl Display for MalType {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                MalType::Quote(q) => f.write_str(&format!("(quote {q})")),
-                MalType::Unquote(q) => f.write_str(&format!("(unquote {q})")),
-                MalType::Quasiquote(q) => f.write_str(&format!("(quasiquote {q})")),
-                MalType::SpliceUnquote(q) => f.write_str(&format!("(splice-unquote {q})")),
-                MalType::Deref(d) => f.write_str(&format!("(deref {d})")),
-                MalType::Number(n) => f.write_str(&n.to_string()),
-                MalType::Keyword(k) => f.write_str(k),
-                MalType::Symbol(s) => f.write_str(s),
-                MalType::Nil(()) => f.write_str("nil"),
-                MalType::Bool(b) => f.write_fmt(format_args!("{b}")),
-                MalType::String(s) => f.write_fmt(format_args!("\"{s}\"")),
-                MalType::SpecialForm(word) => f.write_str(&word.to_string()),
-                MalType::Meta(m) => f.write_str(&format!(
-                    "(with-meta {})",
-                    m.iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )),
-                MalType::List(l) => f.write_str(&format!(
-                    "({})",
-                    l.iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )),
-                MalType::Vector(v) => f.write_str(&format!(
-                    "[{}]",
-                    v.iter()
-                        .map(|t| t.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )),
-                MalType::Map(m) => f.write_str(&format!(
-                    "{{{}}}",
-                    m.iter()
-                        .map(|(k, v)| format!("{} {}", k, v))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )),
-                MalType::LiftedFunc(name, _) => {
-                    f.write_str(&format!("Built-in Function: {}", &name))
-                }
-                MalType::UserFunc(_params, _body, _env) => f.write_str("#<function>"),
-            }
-        }
-    }
-    impl MalType {
-        /// Returns `true` if the mal type is [`UserFunc`].
-        ///
-        /// [`UserFunc`]: MalType::UserFunc
-        #[must_use]
-        pub fn is_user_func(&self) -> bool {
-            matches!(self, Self::UserFunc(..))
+            f.write_str(&super::printer::pr_str(self.clone(), true))
         }
     }
 
@@ -481,10 +434,12 @@ pub(crate) mod reader {
                                             ch,
                                             previous_backslash,
                                         ) {
+                                            // Escape newline
                                             ('n', true) => {
                                                 str.push('\n');
                                                 (str, false)
                                             }
+                                            // Escape quote
                                             ('"', true) => {
                                                 str.push('\"');
                                                 (str, false)
@@ -493,12 +448,15 @@ pub(crate) mod reader {
                                                 str.push('\\');
                                                 (str, false)
                                             }
+                                            // Default escaped character
                                             (c, true) => {
                                                 str.push('\\');
                                                 str.push(c);
                                                 (str, false)
                                             }
+                                            // Start escaping
                                             ('\\', false) => (str, true),
+                                            // Unescaped character
                                             (c, false) => {
                                                 str.push(c);
                                                 (str, false)
@@ -547,26 +505,71 @@ pub(crate) mod printer {
     /// Print out the AST expression
     pub fn pr_str(ast: MalType, print_readably: bool) -> String {
         match ast {
-            super::reader::MalType::String(ref s) if print_readably => {
-                // dbg!(s);
-                format!(
-                    r#""{}""#,
-                    s.escape_debug()
-                        .map(|c| match c {
-                            '\\' => "\\\\".to_string(),
-                            c => c.to_string(),
-                        })
-                        // s.chars()
-                        //     .map(|c| match c {
-                        //         '"' => "\\\"".to_string(),
-                        //         '\n' => "\\n".to_string(),
-                        //         '\\' => "\\\\".to_string(),
-                        //         _ => c.to_string(),
-                        //     })
-                        .collect::<String>()
-                )
+            MalType::String(s) => {
+                if print_readably {
+                    format!(
+                        "\"{}\"",
+                        s.chars()
+                            .map(|c| match c {
+                                '"' => "\\\"".to_string(),
+                                '\n' => "\\n".to_string(),
+                                '\\' => "\\\\".to_string(),
+                                _ => c.to_string(),
+                            })
+                            .collect::<Vec<String>>()
+                            .join("")
+                    )
+                } else {
+                    s
+                }
             }
-            _ => ast.to_string(),
+            MalType::Nil(_) => String::from("nil"),
+            MalType::Bool(b) => b.to_string(),
+            MalType::Quote(q) => format!("(quote {}", pr_str(*q, print_readably)),
+            MalType::Quasiquote(q) => format!("(quasiquote {}", pr_str(*q, print_readably)),
+            MalType::Unquote(u) => format!("(unquote {}", pr_str(*u, print_readably)),
+            MalType::SpliceUnquote(s) => format!("(splice-quote {}", pr_str(*s, print_readably)),
+            MalType::Deref(d) => format!("(deref {}", pr_str(*d, print_readably)),
+            MalType::Meta(m) => format!(
+                "(with-meta {}",
+                m.into_iter()
+                    .map(|t| pr_str(t, print_readably))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            MalType::Number(n) => n.to_string(),
+            MalType::Keyword(k) => k.to_string(),
+            MalType::SpecialForm(k) => k.to_string(),
+            MalType::Symbol(s) => s.to_string(),
+            MalType::List(l) => format!(
+                "({})",
+                l.into_iter()
+                    .map(|m| pr_str(m, print_readably))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            MalType::Vector(v) => format!(
+                "[{}]",
+                v.into_iter()
+                    .map(|m| pr_str(m, print_readably))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            MalType::Map(m) => format!(
+                "({})",
+                m.into_iter()
+                    .map(|(k, v)| format!(
+                        "{} {}",
+                        pr_str(k, print_readably),
+                        pr_str(v, print_readably)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            MalType::LiftedFunc(n, _) => format!("Built-in Function: {n}"),
+            MalType::UserFunc(p, b, _) => {
+                format!("(fn* ({}) {}", p.join(" "), pr_str(*b, print_readably))
+            }
         }
     }
 }
@@ -700,44 +703,45 @@ pub(crate) mod core {
 
     use super::{env::Env, printer::pr_str, reader::MalType, rep, MalResult};
 
+    /// Apply pr_str to each argument and join them together
+    pub fn stringify_args(
+        args: VecDeque<MalType>,
+        print_readably: bool,
+        join_str: Option<&str>,
+    ) -> String {
+        args.into_iter()
+            .map(|a| pr_str(a, print_readably))
+            .collect::<Vec<_>>()
+            .join(join_str.unwrap_or(""))
+    }
+    /// Makes each argument to their readable (escaped) string representation and concatenates them into a single string type.
     pub fn pr_dash_str(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
-        Ok(MalType::String(
-            args.into_iter()
-                .map(|a| pr_str(a, true))
-                .collect::<Vec<_>>()
-                .join(" "),
-        ))
+        Ok(MalType::String(stringify_args(args, true, Some(" "))))
     }
 
+    /// Makes each argument to their string representation and concatenates them into a single string type.
     pub fn str(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
-        Ok(MalType::String(
-            args.into_iter()
-                .map(|a| pr_str(a, false))
-                .collect::<Vec<_>>()
-                .join(" "),
-        ))
+        Ok(MalType::String(stringify_args(args, false, None)))
     }
 
+    /// Makes each argument to their readable (escaped) string representation, concatenates them, and then prints the result to console.
     pub fn prn(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
-        let MalType::String(s) = pr_dash_str(args, _env)? else {
-            unreachable!("pr-str should never return a non-string")
-        };
-        println!("{}", s);
+        println!("{}", dbg!(stringify_args(args, true, Some(" "))));
         Ok(MalType::Nil(()))
     }
 
+    /// Makes each argument to their string representation, concatenates them, and then prints the result to console.
     pub fn println(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
-        let MalType::String(s) = str(args, _env)? else {
-            unreachable!("str should never return a non-string")
-        };
-        println!("{}", s);
+        println!("{}", stringify_args(args, false, Some(" ")));
         Ok(MalType::Nil(()))
     }
 
+    /// Convert all arguments to a list
     pub fn to_list(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
         Ok(MalType::List(args))
     }
 
+    /// Check if first argument is a list
     pub fn is_list(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
         match args.get(0) {
             Some(MalType::List(_)) => Ok(MalType::Bool(true)),
@@ -746,6 +750,7 @@ pub(crate) mod core {
         }
     }
 
+    /// Check if first argument is empty
     pub fn is_empty(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
         match args.get(0) {
             Some(MalType::List(l)) => Ok(MalType::Bool(l.is_empty())),
@@ -756,6 +761,7 @@ pub(crate) mod core {
         }
     }
 
+    /// Check the number of elements in first argument
     pub fn count(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
         match args.get(0) {
             Some(MalType::List(l)) => Ok(MalType::Number(l.len() as f64)),
@@ -879,12 +885,6 @@ pub(crate) mod core {
         };
     }
 
-    // macro_rules! set_lisp_fn {
-    //     ($repl_env: ident += (def! $name:ident (fn* $($params:ident)* $($body:tt)*))) => {
-    //         $repl_env.set($name, MalType::UserFunc(vec![$(stringify!($params).to_string),*],,$repl_env))
-    //     };
-    // }
-
     /// Creates a new environment with basic 4 function arithmetic operations
     pub fn create_core_environment() -> Env {
         let mut env = Env::new();
@@ -929,19 +929,9 @@ fn eval_error<T>(msg: &str) -> Result<T, ReplError> {
     Err(ReplError::Eval(msg.to_string()))
 }
 
-// /// Read in from a given editor and parse it into an AST
-// fn read_old(rl: &mut DefaultEditor) -> Result<Ast, ReplError> {
-//     let line = rl.readline("user> ").map_err(ReplError::Readline)?;
-//     rl.add_history_entry(line.clone())
-//         .map_err(ReplError::Readline)?;
-//     let expr = *reader::read_str(&line).map_err(ReplError::Parse)?;
-//     Ok(Ast { expr })
-// }
-
-/// Read in a string and parse it into an AST
+/// Read in a string and parse it into an AST expression
 fn read(line: String) -> Result<MalType, ReplError> {
     let expr = *reader::read_str(&line).map_err(ReplError::Parse)?;
-    // Ok(Ast { expr })
     Ok(expr)
 }
 
@@ -1208,13 +1198,22 @@ mod tests {
     static mut OUTPUT: Vec<String> = vec![];
 
     pub fn simulate_print(args: VecDeque<MalType>, _env: &mut Env) -> Result<MalType, String> {
-        match args.get(0) {
-            Some(expr) => {
-                unsafe { OUTPUT.push(expr.to_string()) };
-                Ok(MalType::Nil(()))
-            }
-            None => Err("Not enough arguments".to_string()),
-        }
+        let string = core::stringify_args(args, true, Some(" "));
+        unsafe { OUTPUT.push(string) };
+        Ok(MalType::Nil(()))
+    }
+    pub fn simulate_println(args: VecDeque<MalType>, _env: &mut Env) -> Result<MalType, String> {
+        let string = core::stringify_args(args, false, Some(" "));
+
+        unsafe {
+            OUTPUT.extend(
+                string
+                    .split('\n')
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        Ok(MalType::Nil(()))
     }
 
     #[test]
@@ -1226,17 +1225,21 @@ mod tests {
             "prn".to_string(),
             MalType::LiftedFunc("Simulate Print".to_string(), simulate_print),
         );
+        test_env.set(
+            "println".to_string(),
+            MalType::LiftedFunc("Simulate Println".to_string(), simulate_println),
+        );
         let mut result = Ok(MalType::Nil(()));
         let mut current_out_index = 0;
-        for (number, line) in file.lines().enumerate() {
+        for (number, line) in file.lines().enumerate().map(|(n, l)| (n + 1, l)) {
             if line.is_empty() || line.starts_with(";;") || line.starts_with(";>>>") {
                 continue;
             } else if line.starts_with(";=>") {
                 let output = line.trim_start_matches(";=>");
-                if let Ok(success) = &result {
+                if let Ok(ref success) = result {
                     assert_eq!(
-                        success.to_string(),
-                        dbg!(output),
+                        printer::pr_str(success.clone(), true),
+                        output,
                         "Checking line {number} evaluates correctly"
                     );
                 } else {
@@ -1245,14 +1248,14 @@ mod tests {
                     );
                 }
                 assert!(&result.is_ok());
-                // assert_eq!(result.unwrap().to_string(), line.trim_start_matches(";=>"));
-            } else if line.starts_with(";/") {
+            } else if let Some(pat) = line.strip_prefix(";/") {
                 match unsafe { OUTPUT.get(current_out_index) } {
                     Some(output) => {
-                        assert!(line.contains(output), "See line {number} for error");
+                        let re = regex::Regex::new(pat).unwrap();
+                        assert!(re.is_match(output), "See line {number} for error");
                     }
                     None => assert!(result.is_err(), "See line {number} for error"),
-                }
+                };
                 current_out_index += 1;
             } else {
                 unsafe { OUTPUT.clear() };
