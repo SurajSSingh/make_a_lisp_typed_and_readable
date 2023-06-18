@@ -142,7 +142,7 @@ pub(crate) mod reader {
         Symbol(String),
         String(String),
         List(VecDeque<MalType>),
-        Vector(Vec<MalType>),
+        Vector(VecDeque<MalType>),
         Map(Vec<(MalType, MalType)>),
         LiftedFunc(String, fn(VecDeque<MalType>, &mut Env) -> MalResult),
         UserFunc(Vec<String>, Box<MalType>, Env),
@@ -356,7 +356,7 @@ pub(crate) mod reader {
     fn read_vector<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
-        let mut list = Vec::new();
+        let mut list = VecDeque::new();
         let mut rem = lex_list;
         while let Some(token) = rem.get(0) {
             match token {
@@ -366,7 +366,7 @@ pub(crate) mod reader {
                 }
                 _ => {
                     let (result, remaining) = read_form(rem)?;
-                    list.push(result);
+                    list.push_back(result);
                     rem = remaining;
                 }
             }
@@ -556,7 +556,7 @@ pub(crate) mod printer {
                     .join(" ")
             ),
             MalType::Map(m) => format!(
-                "({})",
+                "{{{}}}",
                 m.into_iter()
                     .map(|(k, v)| format!(
                         "{} {}",
@@ -726,7 +726,7 @@ pub(crate) mod core {
 
     /// Makes each argument to their readable (escaped) string representation, concatenates them, and then prints the result to console.
     pub fn prn(args: VecDeque<MalType>, _env: &mut Env) -> MalResult {
-        println!("{}", dbg!(stringify_args(args, true, Some(" "))));
+        println!("{}", stringify_args(args, true, Some(" ")));
         Ok(MalType::Nil(()))
     }
 
@@ -939,9 +939,9 @@ fn read(line: String) -> Result<MalType, ReplError> {
 fn eval_ast(expr: MalType, env: &mut Env) -> Result<MalType, ReplError> {
     match expr {
         MalType::Symbol(s) => env.get(s).map_err(ReplError::Eval),
-        MalType::List(l) => {
+        ref typ @ MalType::List(ref vd) | ref typ @ MalType::Vector(ref vd) => {
             let new_list =
-                l.iter()
+                vd.iter()
                     .map(|e| eval(e.clone(), env))
                     .try_fold(VecDeque::new(), |mut list, r| {
                         if let Ok(e) = r {
@@ -951,21 +951,11 @@ fn eval_ast(expr: MalType, env: &mut Env) -> Result<MalType, ReplError> {
                             Err(r.unwrap_err())
                         }
                     });
-            new_list.map(MalType::List)
-        }
-        MalType::Vector(v) => {
-            let new_vec =
-                v.iter()
-                    .map(|e| eval(e.clone(), env))
-                    .try_fold(Vec::new(), |mut vector, r| {
-                        if let Ok(e) = r {
-                            vector.push(e);
-                            Ok(vector)
-                        } else {
-                            Err(r.unwrap_err())
-                        }
-                    });
-            new_vec.map(MalType::Vector)
+            match typ {
+                MalType::List(_) => new_list.map(MalType::List),
+                MalType::Vector(_) => new_list.map(MalType::Vector),
+                _ => unreachable!("MalType not a vector or list but we bound to it in the previous match, impossible!")
+            }
         }
         MalType::Map(m) => {
             let new_map = m.iter().map(|(k, v)| (k, eval(v.clone(), env))).try_fold(
@@ -987,161 +977,163 @@ fn eval_ast(expr: MalType, env: &mut Env) -> Result<MalType, ReplError> {
 
 /// Evaluate the given expression and return the result
 fn eval(ast: MalType, env: &mut Env) -> Result<MalType, ReplError> {
-    match ast.clone() {
-        MalType::List(ref v) if v.is_empty() => Ok(ast),
-        MalType::List(mut ast_expr) => {
-            let Some(mal) = ast_expr.pop_front() else {
+    let mut current_ast = ast;
+    let mut current_env = env;
+    'tco: loop {
+        match current_ast.clone() {
+            MalType::List(ref v) if v.is_empty() => return Ok(current_ast),
+            MalType::List(mut ast_expr) => {
+                let Some(mal) = ast_expr.pop_front() else {
                 return eval_error("Resulting list is empty and cannot be evaluated!");
             };
 
-            match mal {
-                MalType::SpecialForm(SpecialKeyword::Def) => {
-                    let Some(MalType::Symbol(key)) = ast_expr.pop_front() else {
+                match mal {
+                    MalType::SpecialForm(SpecialKeyword::Def) => {
+                        let Some(MalType::Symbol(key)) = ast_expr.pop_front() else {
                         return eval_error("No symbol to define");
                     };
-                    let Some(val) = ast_expr.pop_front() else {
+                        let Some(val) = ast_expr.pop_front() else {
                         return eval_error("No value to bind to symbol");
                     };
-                    let evaluated_val = eval(val, env)?;
-                    env.set(key, evaluated_val.clone());
-                    Ok(evaluated_val)
-                }
-                MalType::SpecialForm(SpecialKeyword::Let) => {
-                    let mut new_env = Env::with_outer(Box::new(env.clone()));
-                    match ast_expr.pop_front() {
-                        Some(MalType::List(binds)) => {
-                            // Bind[even] = symbols
-                            // Bind[odd] = values
-                            for (key, val) in
-                                binds.iter().step_by(2).zip(binds.iter().skip(1).step_by(2))
-                            {
-                                match key {
-                                    MalType::Symbol(sym) => {
-                                        let evaluated_val = eval(val.clone(), &mut new_env)?;
-                                        new_env.set(sym.to_owned(), evaluated_val);
-                                    }
-                                    _ => {
-                                        return eval_error(&format!(
-                                            "Binding to non-symbol: {}",
-                                            key
-                                        ))
+                        let evaluated_val = eval(val, current_env)?;
+                        current_env.set(key, evaluated_val.clone());
+                        return Ok(evaluated_val);
+                    }
+                    // FIXME: Environment leaks outside of let
+                    MalType::SpecialForm(SpecialKeyword::Let) => {
+                        let mut new_env = Env::with_outer(Box::new(current_env.clone()));
+                        match ast_expr.pop_front() {
+                            Some(MalType::List(binds)) | Some(MalType::Vector(binds)) => {
+                                // Bind[even] = symbols
+                                // Bind[odd] = values
+                                for (key, val) in
+                                    binds.iter().step_by(2).zip(binds.iter().skip(1).step_by(2))
+                                {
+                                    match key {
+                                        MalType::Symbol(sym) => {
+                                            let evaluated_val = eval(val.clone(), &mut new_env)?;
+                                            new_env.set(sym.to_owned(), evaluated_val);
+                                        }
+                                        _ => {
+                                            return eval_error(&format!(
+                                                "Binding to non-symbol: {}",
+                                                key
+                                            ))
+                                        }
                                     }
                                 }
-                            }
-                            let Some(key) = ast_expr.pop_front() else {
+                                let Some(body) = ast_expr.pop_front() else {
                                 return eval_error("Second argument empty");
                             };
-                            eval(key, &mut new_env)
-                        }
-                        Some(MalType::Vector(binds)) => {
-                            // Bind[even] = symbols
-                            // Bind[odd] = values
-                            for (key, val) in
-                                binds.iter().step_by(2).zip(binds.iter().skip(1).step_by(2))
-                            {
-                                match key {
-                                    MalType::Symbol(sym) => {
-                                        let evaluated_val = eval(val.clone(), &mut new_env)?;
-                                        new_env.set(sym.to_owned(), evaluated_val);
-                                    }
-                                    _ => {
-                                        return eval_error(&format!(
-                                            "Binding to non-symbol: {}",
-                                            key
-                                        ))
-                                    }
-                                }
+                                *current_env = new_env;
+                                current_ast = body;
+                                continue 'tco;
                             }
-                            let Some(key) = ast_expr.pop_front() else {
-                                return eval_error("Second argument empty");
-                            };
-                            eval(key, &mut new_env)
+                            Some(_) => {
+                                return eval_error("Non-list binding found for let*");
+                            }
+                            None => {
+                                return eval_error("No values to bind in environment");
+                            }
                         }
-                        Some(_) => eval_error("Non-list binding found for let*"),
-                        None => eval_error("No values to bind in environment"),
                     }
-                }
-                MalType::SpecialForm(SpecialKeyword::Do) => {
-                    match eval_ast(MalType::List(ast_expr), env)? {
-                        MalType::List(l) => Ok(l
-                            .back()
-                            .map(|last| last.to_owned())
-                            .unwrap_or(MalType::Nil(()))),
-                        _ => eval_error("Expected list"),
+                    MalType::SpecialForm(SpecialKeyword::Do) => {
+                        let _ = eval_ast(
+                            MalType::List(
+                                ast_expr
+                                    .range(..ast_expr.len() - 1)
+                                    .cloned()
+                                    .collect::<VecDeque<_>>(),
+                            ),
+                            current_env,
+                        );
+                        current_ast = ast_expr.back().cloned().unwrap_or(MalType::Nil(()));
+                        continue 'tco;
                     }
-                }
-                MalType::SpecialForm(SpecialKeyword::If) => {
-                    let Some(cond) = ast_expr.pop_front() else {
+                    MalType::SpecialForm(SpecialKeyword::If) => {
+                        let Some(cond) = ast_expr.pop_front() else {
                         return eval_error("No condition for if form given");
                     };
-                    match eval(cond, env) {
-                        Ok(MalType::Nil(()) | MalType::Bool(false)) => {
-                            ast_expr.pop_front();
-                            eval(ast_expr.pop_front().unwrap_or(MalType::Nil(())), env)
-                        }
-                        Ok(_) => {
-                            if let Some(true_branch) = ast_expr.pop_front() {
-                                eval(true_branch, env)
-                            } else {
-                                eval_error("No true branch to evaluate")
+                        match eval(cond, current_env) {
+                            Ok(MalType::Nil(()) | MalType::Bool(false)) => {
+                                ast_expr.pop_front();
+                                current_ast = ast_expr.pop_front().unwrap_or(MalType::Nil(()));
+                            }
+                            Ok(_) => {
+                                if let Some(true_branch) = ast_expr.pop_front() {
+                                    current_ast = true_branch;
+                                    continue 'tco;
+                                } else {
+                                    return eval_error("No true branch to evaluate");
+                                }
+                            }
+                            Err(_) => {
+                                return eval_error("Failed to evaluate condition");
                             }
                         }
-                        Err(_) => eval_error("Failed to evaluate condition"),
                     }
-                }
-                MalType::SpecialForm(SpecialKeyword::Fn) => {
-                    let params = match ast_expr.pop_front() {
-                        Some(MalType::List(l)) => {
-                            l.into_iter().try_fold(Vec::new(), |mut acc, m| match m {
-                                MalType::Symbol(s) => {
-                                    acc.push(s);
-                                    Ok(acc)
-                                }
-                                _ => eval_error(&format!("Not a symbol: {:?}", m)),
-                            })?
-                        }
-                        Some(MalType::Vector(v)) => {
-                            v.into_iter().try_fold(Vec::new(), |mut acc, m| match m {
-                                MalType::Symbol(s) => {
-                                    acc.push(s);
-                                    Ok(acc)
-                                }
-                                _ => eval_error(&format!("Not a symbol: {:?}", m)),
-                            })?
-                        }
-                        _ => return eval_error("No parameter list found"),
-                    };
-                    let Some(body) = ast_expr.pop_front() else {
+                    MalType::SpecialForm(SpecialKeyword::Fn) => {
+                        let params = match ast_expr.pop_front() {
+                            Some(MalType::List(l)) => {
+                                l.into_iter().try_fold(Vec::new(), |mut acc, m| match m {
+                                    MalType::Symbol(s) => {
+                                        acc.push(s);
+                                        Ok(acc)
+                                    }
+                                    _ => eval_error(&format!("Not a symbol: {:?}", m)),
+                                })?
+                            }
+                            Some(MalType::Vector(v)) => {
+                                v.into_iter().try_fold(Vec::new(), |mut acc, m| match m {
+                                    MalType::Symbol(s) => {
+                                        acc.push(s);
+                                        Ok(acc)
+                                    }
+                                    _ => eval_error(&format!("Not a symbol: {:?}", m)),
+                                })?
+                            }
+                            _ => return eval_error("No parameter list found"),
+                        };
+                        let Some(body) = ast_expr.pop_front() else {
                         return eval_error("Function body not defined");
                     };
-                    Ok(MalType::UserFunc(params, Box::new(body), env.clone()))
-                }
-                _ => match eval_ast(ast, env)? {
-                    MalType::List(mut list) => {
-                        let Some(func) = list.pop_front() else {
+                        // Ok(MalType::UserFunc(params, Box::new(body), env.clone()))
+                        unimplemented!()
+                    }
+                    _ => match eval_ast(current_ast, current_env)? {
+                        MalType::List(mut list) => {
+                            let Some(func) = list.pop_front() else {
                             return eval_error("Function not defined");
                         };
-                        match func {
-                            MalType::LiftedFunc(_, func) => {
-                                func(list, env).map_err(ReplError::Eval)
+                            match func {
+                                MalType::LiftedFunc(_, func) => {
+                                    return func(list, current_env).map_err(ReplError::Eval)
+                                }
+                                MalType::UserFunc(params, body, outer_env) => {
+                                    let mut fn_env = Env::with_outer_and_bindings(
+                                        Box::new(outer_env),
+                                        params,
+                                        list.into(),
+                                        Some(&current_env),
+                                    );
+                                    // eval(*body, &mut fn_env)
+                                    unimplemented!()
+                                }
+                                non_func => {
+                                    return eval_error(&format!(
+                                        "Expected a function, got {non_func}"
+                                    ));
+                                }
                             }
-                            MalType::UserFunc(params, body, outer_env) => {
-                                let mut fn_env = Env::with_outer_and_bindings(
-                                    Box::new(outer_env),
-                                    params,
-                                    list.into(),
-                                    Some(env),
-                                );
-                                eval(*body, &mut fn_env)
-                            }
-                            non_func => eval_error(&format!("Expected a function, got {non_func}")),
                         }
-                    }
-                    non_list => eval_error(&format!("Expected a list, got {non_list}")),
-                },
+                        non_list => {
+                            return eval_error(&format!("Expected a list, got {non_list}"));
+                        }
+                    },
+                }
             }
+            _ => return eval_ast(current_ast, current_env),
         }
-        _ => eval_ast(ast, env),
     }
 }
 
@@ -1162,7 +1154,7 @@ fn rep(line: String, env: &mut Env) -> Result<(), ReplError> {
 pub fn main() -> rustyline::Result<()> {
     let mut rl = DefaultEditor::new()?;
     let mut repl_env = create_core_environment();
-    add_premade_lisp_fn_to(&mut repl_env);
+    // add_premade_lisp_fn_to(&mut repl_env);
     loop {
         let line = match rl.readline("user> ") {
             Ok(line) => line,
