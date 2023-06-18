@@ -1,5 +1,3 @@
-mod utils;
-
 mod step0_repl;
 mod step1_read_print;
 mod step2_eval;
