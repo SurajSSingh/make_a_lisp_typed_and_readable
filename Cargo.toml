@@ -9,5 +9,5 @@ edition = "2021"
 logos = "0.13.0"
 test-case = "3.1.0"
 rustyline = "11.0.0"
-color-eyre = "0.6.2"
+miette = {version = "5.9.0", features =["fancy"]}
 regex = "1.8.4"

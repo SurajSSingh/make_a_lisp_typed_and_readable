@@ -1,5 +1,4 @@
 #![deny(missing_docs)]
-use std::fmt::format;
 
 use reader::{MalType, ParseError};
 use rustyline::{error::ReadlineError, DefaultEditor};
@@ -16,9 +15,9 @@ pub type MalResult = Result<MalType, ReplError>;
 
 pub(crate) mod reader {
 
-    use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc, vec};
+    use std::{cell::RefCell, collections::VecDeque, fmt::Display, ops::Deref, rc::Rc, vec};
 
-    use logos::Logos;
+    use logos::{Logos, Span};
 
     use super::{env::Env, MalResult};
 
@@ -133,7 +132,6 @@ pub(crate) mod reader {
         Quasiquote(Box<MalType>),
         Unquote(Box<MalType>),
         SpliceUnquote(Box<MalType>),
-        Deref(Box<MalType>),
         Meta(Vec<MalType>),
         Number(f64),
         Keyword(String),
@@ -163,7 +161,6 @@ pub(crate) mod reader {
                 MalType::Quasiquote(_) => "Quasiquote".to_string(),
                 MalType::Unquote(_) => "Unquote".to_string(),
                 MalType::SpliceUnquote(_) => "SpliceUnquote".to_string(),
-                MalType::Deref(_) => "Deref".to_string(),
                 MalType::Meta(_) => "Meta".to_string(),
                 MalType::Number(_) => "Number".to_string(),
                 MalType::Keyword(_) => "Keyword".to_string(),
@@ -190,7 +187,6 @@ pub(crate) mod reader {
                 (Self::Quasiquote(l0), Self::Quasiquote(r0)) => l0 == r0,
                 (Self::Unquote(l0), Self::Unquote(r0)) => l0 == r0,
                 (Self::SpliceUnquote(l0), Self::SpliceUnquote(r0)) => l0 == r0,
-                (Self::Deref(l0), Self::Deref(r0)) => l0 == r0,
                 (Self::Meta(l0), Self::Meta(r0)) => l0 == r0,
                 (Self::Number(l0), Self::Number(r0)) => l0 == r0,
                 (Self::Keyword(l0), Self::Keyword(r0)) => l0 == r0,
@@ -239,7 +235,6 @@ pub(crate) mod reader {
                 Self::Quasiquote(arg0) => f.debug_tuple("Quasiquote").field(arg0).finish(),
                 Self::Unquote(arg0) => f.debug_tuple("Unquote").field(arg0).finish(),
                 Self::SpliceUnquote(arg0) => f.debug_tuple("SpliceUnquote").field(arg0).finish(),
-                Self::Deref(arg0) => f.debug_tuple("Deref").field(arg0).finish(),
                 Self::Meta(arg0) => f.debug_tuple("Meta").field(arg0).finish(),
                 Self::Number(arg0) => f.debug_tuple("Number").field(arg0).finish(),
                 Self::Keyword(arg0) => f.debug_tuple("Keyword").field(arg0).finish(),
@@ -273,6 +268,26 @@ pub(crate) mod reader {
         }
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct SpannedMalType {
+        value: MalType,
+        span: logos::Span,
+    }
+
+    impl Deref for SpannedMalType {
+        type Target = MalType;
+
+        fn deref(&self) -> &Self::Target {
+            &self.value
+        }
+    }
+
+    impl std::ops::DerefMut for SpannedMalType {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.value
+        }
+    }
+
     #[derive(Debug, Clone, Copy, PartialEq)]
     #[non_exhaustive]
     /// Error messages produced during parsing stage
@@ -299,10 +314,21 @@ pub(crate) mod reader {
     }
 
     /// Take a string and produce a list of token
-    fn tokenize<'t>(input: &'t str) -> VecDeque<Token<'t>> {
-        Box::new(Token::lexer(input).filter_map(|res: Result<Token<'t>, ()>| res.ok()))
+    fn tokenize(input: &str) -> VecDeque<Token> {
+        Box::new(Token::lexer(input).filter_map(|res| res.ok()))
             .filter(|tok| !tok.is_comment())
             .collect()
+    }
+
+    /// Take a string and produce a list of token
+    fn spanned_tokenize<'t>(input: &'t str) -> Vec<(Token<'t>, Span)> {
+        Box::new(
+            Token::lexer(input)
+                .spanned()
+                .filter_map(|(res, span)| res.ok().map(|t| (t, span))),
+        )
+        .filter(|(tok, spn)| !tok.is_comment())
+        .collect()
     }
 
     /// Take a sequence of token and read its form
@@ -586,7 +612,6 @@ pub(crate) mod printer {
             MalType::Quasiquote(q) => format!("(quasiquote {})", pr_str(*q, print_readably)),
             MalType::Unquote(u) => format!("(unquote {})", pr_str(*u, print_readably)),
             MalType::SpliceUnquote(s) => format!("(splice-quote {})", pr_str(*s, print_readably)),
-            MalType::Deref(d) => format!("(deref {})", pr_str(*d, print_readably)),
             MalType::Meta(m) => format!(
                 "(with-meta {}",
                 m.into_iter()
