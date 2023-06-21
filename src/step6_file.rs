@@ -1,5 +1,5 @@
 #![deny(missing_docs)]
-use std::collections::VecDeque;
+use std::fmt::format;
 
 use reader::{MalType, ParseError};
 use rustyline::{error::ReadlineError, DefaultEditor};
@@ -7,16 +7,16 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 use env::Env;
 
 use self::{
-    core::{add_premade_lisp_fn_to, create_core_environment},
+    core::{add_premade_lisp_fn_to, create_core_namespace},
     reader::SpecialKeyword,
 };
 
 /// Either results in a MAL type or gives back a message for an error
-pub type MalResult = Result<MalType, String>;
+pub type MalResult = Result<MalType, ReplError>;
 
 pub(crate) mod reader {
 
-    use std::{collections::VecDeque, fmt::Display};
+    use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc, vec};
 
     use logos::Logos;
 
@@ -151,6 +151,33 @@ pub(crate) mod reader {
             fn_env: Env,
             fn_val: Box<MalType>,
         },
+        Atom(Rc<RefCell<MalType>>),
+    }
+
+    impl MalType {
+        pub fn get_type(&self) -> String {
+            match self {
+                MalType::Nil(_) => "Nil".to_string(),
+                MalType::Bool(_) => "Bool".to_string(),
+                MalType::Quote(_) => "Quote".to_string(),
+                MalType::Quasiquote(_) => "Quasiquote".to_string(),
+                MalType::Unquote(_) => "Unquote".to_string(),
+                MalType::SpliceUnquote(_) => "SpliceUnquote".to_string(),
+                MalType::Deref(_) => "Deref".to_string(),
+                MalType::Meta(_) => "Meta".to_string(),
+                MalType::Number(_) => "Number".to_string(),
+                MalType::Keyword(_) => "Keyword".to_string(),
+                MalType::SpecialForm(form) => format!("Special-Form: {form}"),
+                MalType::Symbol(_) => "Symbol".to_string(),
+                MalType::String(_) => "String".to_string(),
+                MalType::List(_) => "List".to_string(),
+                MalType::Vector(_) => "Vector".to_string(),
+                MalType::Map(_) => "Map".to_string(),
+                MalType::LiftedFunc(_, _) => "Built-in Function".to_string(),
+                MalType::MalFunc { .. } => "User Function".to_string(),
+                MalType::Atom(_) => "Atom".to_string(),
+            }
+        }
     }
 
     impl PartialEq for MalType {
@@ -173,6 +200,7 @@ pub(crate) mod reader {
                 (Self::List(l0), Self::List(r0)) => l0 == r0,
                 (Self::Vector(l0), Self::Vector(r0)) => l0 == r0,
                 (Self::Map(l0), Self::Map(r0)) => l0 == r0,
+                (Self::Atom(a0), Self::Atom(a1)) => a0 == a1,
                 (Self::LiftedFunc(l0, _l1), Self::LiftedFunc(r0, _r1)) => l0 == r0,
                 (
                     Self::MalFunc {
@@ -234,6 +262,7 @@ pub(crate) mod reader {
                     .field("fn_env", fn_env)
                     .field("fn_val", fn_val)
                     .finish(),
+                Self::Atom(a) => f.debug_tuple("Atom").field(a).finish(),
             }
         }
     }
@@ -307,7 +336,10 @@ pub(crate) mod reader {
                 Token::Deref => {
                     lex_list.pop_front();
                     let (form, remaining) = read_form(lex_list)?;
-                    Ok((MalType::Deref(Box::new(form)), remaining))
+                    Ok((
+                        MalType::List(vec![MalType::Symbol("deref".to_string()), form]),
+                        remaining,
+                    ))
                 }
                 Token::Meta => {
                     lex_list.pop_front();
@@ -402,8 +434,8 @@ pub(crate) mod reader {
     /// Read a hashmap from lexed list
     ///
     /// Example:
-    /// * {"a" 1} -> **OK**: MalType::Map({"a":1}))
-    /// * {"a" 1 -> **ERR**: Unbalanced Parenthesis
+    /// * {"a" 1} -> **OK**: MalType::Map({"a":1})
+    /// * {"a" 1} -> **ERR**: Unbalanced Parenthesis
     fn read_hashmap<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
     ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
@@ -550,11 +582,11 @@ pub(crate) mod printer {
             }
             MalType::Nil(_) => String::from("nil"),
             MalType::Bool(b) => b.to_string(),
-            MalType::Quote(q) => format!("(quote {}", pr_str(*q, print_readably)),
-            MalType::Quasiquote(q) => format!("(quasiquote {}", pr_str(*q, print_readably)),
-            MalType::Unquote(u) => format!("(unquote {}", pr_str(*u, print_readably)),
-            MalType::SpliceUnquote(s) => format!("(splice-quote {}", pr_str(*s, print_readably)),
-            MalType::Deref(d) => format!("(deref {}", pr_str(*d, print_readably)),
+            MalType::Quote(q) => format!("(quote {})", pr_str(*q, print_readably)),
+            MalType::Quasiquote(q) => format!("(quasiquote {})", pr_str(*q, print_readably)),
+            MalType::Unquote(u) => format!("(unquote {})", pr_str(*u, print_readably)),
+            MalType::SpliceUnquote(s) => format!("(splice-quote {})", pr_str(*s, print_readably)),
+            MalType::Deref(d) => format!("(deref {})", pr_str(*d, print_readably)),
             MalType::Meta(m) => format!(
                 "(with-meta {}",
                 m.into_iter()
@@ -598,6 +630,7 @@ pub(crate) mod printer {
                 fn_env: _,
                 fn_val: _,
             } => format!("(fn* ({}) {fn_ast})", params.join(" ")),
+            MalType::Atom(a) => format!("(atom {})", pr_str(a.borrow().clone(), print_readably)),
         }
     }
 }
@@ -641,16 +674,14 @@ pub(crate) mod env {
                 match exprs.get(i) {
                     Some(e) => env.set(&MalType::Symbol(b.to_string()), e.clone())?,
                     None => {
-                        return new_eval_error(String::from(
-                            "Not enough arguments to the function",
-                        ));
+                        return new_eval_error(String::from("Not enough arguments to bind to"));
                     }
                 };
             }
             if let Some(start) = variadic_start {
                 let Some(key) = binds.get(start).map(|s|MalType::Symbol(s.to_string())) else {
                     return new_eval_error(String::from(
-                        "No name found for variadic arguments",
+                        "No name found for variadic arguments; there must be a name after the '&' symbol",
                     ));
                 };
                 let val = exprs
@@ -660,6 +691,11 @@ pub(crate) mod env {
             }
             Ok(env)
         }
+
+        pub fn outer(&self) -> Option<Env> {
+            self.0.outer.clone()
+        }
+
         pub fn find(&self, key: &str) -> Option<Env> {
             match (self.0.data.borrow().contains_key(key), self.0.outer.clone()) {
                 (true, _) => Some(self.clone()),
@@ -700,7 +736,15 @@ pub(crate) mod env {
 }
 
 pub(crate) mod core {
-    use super::{env::Env, printer::pr_str, reader::MalType, rep, MalResult};
+    use std::{cell::RefCell, fs::read_to_string, io::ErrorKind, iter::once, rc::Rc};
+
+    use super::{
+        env::Env,
+        eval, new_eval_error,
+        printer::pr_str,
+        reader::{read_str, MalType},
+        rep, MalResult, ReplError,
+    };
 
     /// Apply pr_str to each argument and join them together
     pub fn stringify_args(
@@ -742,33 +786,146 @@ pub(crate) mod core {
 
     /// Check if first argument is a list
     pub fn is_list(args: Vec<MalType>) -> MalResult {
-        match args.get(0) {
-            Some(MalType::List(_)) => Ok(MalType::Bool(true)),
-            Some(_) => Ok(MalType::Bool(false)),
-            None => Err("Not enough arguments".to_string()),
+        match args.as_slice() {
+            [MalType::List(_), ..] => Ok(MalType::Bool(true)),
+            [_, ..] => Ok(MalType::Bool(false)),
+            [] => new_eval_error("Not enough arguments".to_string()),
         }
     }
 
     /// Check if first argument is empty
     pub fn is_empty(args: Vec<MalType>) -> MalResult {
-        match args.get(0) {
-            Some(MalType::List(l)) => Ok(MalType::Bool(l.is_empty())),
-            Some(MalType::Vector(v)) => Ok(MalType::Bool(v.is_empty())),
-            Some(MalType::Map(m)) => Ok(MalType::Bool(m.is_empty())),
-            Some(_) => Err("Is emptyonly works only with non-atomics types".to_string()),
-            None => Err("Not enough arguments".to_string()),
+        match args.as_slice() {
+            [MalType::List(v) | MalType::Vector(v), ..] => Ok(MalType::Bool(v.is_empty())),
+            [MalType::Map(m), ..] => Ok(MalType::Bool(m.is_empty())),
+            [t, ..] => new_eval_error(format!(
+                "Not a valid type; expected a list, vector, or map, but got {}",
+                t.get_type()
+            )),
+            [] => new_eval_error("Not enough arguments".to_string()),
         }
     }
 
     /// Check the number of elements in first argument
     pub fn count(args: Vec<MalType>) -> MalResult {
-        match args.get(0) {
-            Some(MalType::List(l)) => Ok(MalType::Number(l.len() as f64)),
-            Some(MalType::Vector(v)) => Ok(MalType::Number(v.len() as f64)),
-            Some(MalType::Map(m)) => Ok(MalType::Number(m.len() as f64)),
-            Some(MalType::Nil(_)) => Ok(MalType::Number(0.0)),
-            Some(_) => Err("Count only works only with non-atomics types and nil".to_string()),
-            None => Err("Not enough arguments".to_string()),
+        match args.as_slice() {
+            [MalType::List(v) | MalType::Vector(v), ..] => Ok(MalType::Number(v.len() as f64)),
+            [MalType::Map(m), ..] => Ok(MalType::Number(m.len() as f64)),
+            [MalType::Nil(()), ..] => Ok(MalType::Number(0.0)),
+            [t, ..] => new_eval_error(format!(
+                "Not a valid type; expected a list, vector, map, or nil, but got {}",
+                t.get_type()
+            )),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Read a string and tries to parse it to a MalType
+    pub fn read_string(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::String(string), ..] => read_str(string)
+                .map(|m| *m)
+                .map_err(super::ReplError::Parse),
+            [_, ..] => new_eval_error("Not a string".to_string()),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Given a string path, return the contents of the file as a string
+    pub fn slurp(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::String(path), ..] => {
+                read_to_string(path)
+                    .map(MalType::String)
+                    .map_err(|err| match err.kind() {
+                        ErrorKind::NotFound => {
+                            ReplError::Eval(format!("Could not read file: {path} does not exist"))
+                        }
+                        ErrorKind::PermissionDenied => ReplError::Eval(format!(
+                            "Could not read file: you don't have permission to open {path}"
+                        )),
+                        ErrorKind::InvalidInput => {
+                            ReplError::Eval("Could not read file: Invalid input".to_string())
+                        }
+                        ErrorKind::Interrupted => {
+                            ReplError::Eval(format!("File read interrupted while reading: {path}"))
+                        }
+
+                        _ => ReplError::Eval("Unknown I/O error".to_string()),
+                    })
+            }
+            [_, ..] => new_eval_error("Path not a string".to_string()),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Make a given value into an atom
+    pub fn to_atom(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [a, ..] => Ok(MalType::Atom(Rc::new(RefCell::new(a.clone())))),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Check if a given value is an atom
+    pub fn is_atom(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::Atom(_), ..] => Ok(MalType::Bool(true)),
+            [_, ..] => Ok(MalType::Bool(false)),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Dereference an atom to its underlying value
+    pub fn deref(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::Atom(a), ..] => Ok(a.borrow().clone()),
+            [m, ..] => new_eval_error(format!("Cannot deref non-atom; got {}", m.get_type())),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Reset an atom to a different value
+    pub fn reset(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::Atom(a), value, ..] => {
+                a.replace(value.clone());
+                Ok(value.clone())
+            }
+            [m, _, ..] => new_eval_error(format!("Cannot deref non-atom; got {}", m.get_type())),
+            [] | [_] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Use a function to update the value of an atom
+    pub fn swap(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::Atom(a), MalType::LiftedFunc(_, f), extra_args @ ..] => {
+                let new_value = f(once(a.borrow().clone())
+                    .chain(extra_args.iter().cloned())
+                    .collect())?;
+                a.replace(new_value.clone());
+                Ok(new_value)
+            }
+            [MalType::Atom(a), MalType::MalFunc {
+                fn_ast,
+                params,
+                fn_env,
+                fn_val: _,
+            }, extra_args @ ..] => {
+                let env = Env::with_bindings(
+                    Some(fn_env.clone()),
+                    params,
+                    &once(a.borrow().clone())
+                        .chain(extra_args.iter().cloned())
+                        .collect::<Vec<_>>(),
+                )?;
+                let new_value = eval((**fn_ast).clone(), env)?;
+                a.replace(new_value.clone());
+                Ok(new_value)
+            }
+            [m, ..] => new_eval_error(format!("Cannot deref non-atom; got {}", m.get_type())),
+            [] => new_eval_error("Not enough arguments".to_string()),
         }
     }
 
@@ -799,10 +956,10 @@ pub(crate) mod core {
                         $(
                             [$in_t1(x), $in_t2(y), ..] => Ok($out_type($func(x, y)))
                         ),+,
-                        [_, _, ..] => Err(format!(
+                        [_, _, ..] => new_eval_error(format!(
                             "{func_name} function does not work for given type."
                         )),
-                        [] | [_] => Err(format!("Not enough arguments for {func_name}")),
+                        [] | [_] => new_eval_error(format!("Not enough arguments for {func_name}")),
                     }
                 }),
             ).expect("Macro did not set core function properly")
@@ -815,7 +972,7 @@ pub(crate) mod core {
                     let func_name = stringify!($func).split("::").last().unwrap();
                     match args.as_slice(){
                         [x, y, ..] => Ok($out_type($func(x, y))),
-                        [] | [_] => Err(format!("Not enough arguments for {func_name}")),
+                        [] | [_] => new_eval_error(format!("Not enough arguments for {func_name}")),
                     }
                 }),
             ).expect("Macro did not set core function properly")
@@ -858,7 +1015,7 @@ pub(crate) mod core {
     }
 
     /// Creates a new environment with basic 4 function arithmetic operations
-    pub fn create_core_environment() -> Env {
+    pub fn create_core_namespace() -> Env {
         let mut env = Env::default();
 
         // Lifted operations from Rust
@@ -881,6 +1038,20 @@ pub(crate) mod core {
         set_core_fn!(env += is_list as "list?");
         set_core_fn!(env += is_empty as "empty?");
         set_core_fn!(env += count);
+        set_core_fn!(env += read_string as "read-string");
+        set_core_fn!(env += slurp);
+        set_core_fn!(env += to_atom as "atom");
+        set_core_fn!(env += is_atom as "atom?");
+        set_core_fn!(env += deref);
+        set_core_fn!(env += reset as "reset!");
+        set_core_fn!(env += swap as "swap!");
+
+        env.set(
+            &MalType::Symbol("*ARGV*".to_string()),
+            MalType::List(vec![]),
+        )
+        .expect("Could not assign *ARGV*");
+
         env
     }
 
@@ -888,6 +1059,8 @@ pub(crate) mod core {
     pub fn add_premade_lisp_fn_to(env: &mut Env) -> &mut Env {
         // Not function
         rep(String::from("(def! not (fn* (a) (if a false true)))"), env).unwrap();
+        // Load file function
+        rep(String::from(r#"(def! load-file (fn* (f) (eval (read-string (str "(do " (slurp f) "\nnil)")))))"#), env).unwrap();
         env
     }
 }
@@ -908,13 +1081,13 @@ fn eval_error<T>(msg: &str) -> Result<T, ReplError> {
 }
 
 /// Read in a string and parse it into an AST expression
-fn read(line: String) -> Result<MalType, ReplError> {
+fn read(line: String) -> MalResult {
     let expr = *reader::read_str(&line).map_err(ReplError::Parse)?;
     Ok(expr)
 }
 
 /// Evaluate an expression with a given environment
-fn eval_ast(expr: MalType, env: Env) -> Result<MalType, ReplError> {
+fn eval_ast(expr: MalType, env: Env) -> MalResult {
     match expr {
         sym @ MalType::Symbol(_) => env.get(&sym),
         ref typ @ MalType::List(ref list) | ref typ @ MalType::Vector(ref list) => {
@@ -954,26 +1127,35 @@ fn eval_ast(expr: MalType, env: Env) -> Result<MalType, ReplError> {
 }
 
 /// Evaluate the given expression and return the result
-fn eval(ast: MalType, env: Env) -> Result<MalType, ReplError> {
+fn eval(ast: MalType, env: Env) -> MalResult {
     let mut current_ast = ast;
     let mut current_env = env;
     let return_value: Result<MalType, ReplError> = 'tco: loop {
         if let MalType::List(ast_expr) = current_ast.clone() {
             match ast_expr.as_slice() {
-                // Special case: Empty list
+                // Special case #1: Empty list
                 [] => break 'tco Ok(current_ast),
+                // Special case #2: Eval is within the current ast
+                [MalType::Symbol(s), arg, ..] if s == "eval" => {
+                    current_ast = eval(arg.clone(), current_env.clone())?;
+                    // HACK: Eval creates new environment, need to bring back up.
+                    while let Some(outer) = current_env.outer() {
+                        current_env = outer;
+                    }
+                    continue 'tco;
+                }
                 [MalType::SpecialForm(SpecialKeyword::Def), key @ MalType::Symbol(_), val, ..] => {
                     let evaluated = eval(val.clone(), current_env.clone())?;
                     break 'tco current_env.set(key, evaluated);
                 }
-                [MalType::SpecialForm(SpecialKeyword::Def), MalType::Symbol(_)] => {
-                    break 'tco eval_error("No value to bind to symbol")
+                [MalType::SpecialForm(SpecialKeyword::Def), MalType::Symbol(s)] => {
+                    break 'tco new_eval_error(format!("No value to bind to symbol {s}"))
                 }
                 [MalType::SpecialForm(SpecialKeyword::Def)] => {
-                    break 'tco eval_error("No symbol to define")
+                    break 'tco new_eval_error("No symbol to define".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::Def), ..] => {
-                    break 'tco eval_error("Not a valid do-form")
+                    break 'tco new_eval_error("Not a valid do-form".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::Let), MalType::List(binds) | MalType::Vector(binds), let_ast, ..] =>
                 {
@@ -984,17 +1166,24 @@ fn eval(ast: MalType, env: Env) -> Result<MalType, ReplError> {
                                 let evaluated_val = eval(val.clone(), current_env.clone())?;
                                 current_env.set(sym, evaluated_val)?;
                             }
-                            _ => break 'tco eval_error(&format!("Binding to non-symbol: {}", key)),
+                            _ => {
+                                break 'tco new_eval_error(format!(
+                                    "Binding to non-symbol: {}",
+                                    key
+                                ))
+                            }
                         }
                     }
                     current_ast = let_ast.clone();
                     continue 'tco;
                 }
                 [MalType::SpecialForm(SpecialKeyword::Let), MalType::List(_) | MalType::Vector(_)] => {
-                    break 'tco eval_error("No item to process in let*")
+                    break 'tco new_eval_error(
+                        "No item to process in let*; empty list or vector".to_string(),
+                    )
                 }
                 [MalType::SpecialForm(SpecialKeyword::Let)] => {
-                    break 'tco eval_error("No bindings found")
+                    break 'tco new_eval_error("No bindings found".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::Do), between @ .., last] => {
                     let _ = eval_ast(MalType::List(between.to_vec()), current_env.clone());
@@ -1002,7 +1191,7 @@ fn eval(ast: MalType, env: Env) -> Result<MalType, ReplError> {
                     continue 'tco;
                 }
                 [MalType::SpecialForm(SpecialKeyword::Do)] => {
-                    break 'tco eval_error("Do form has nothing to do")
+                    break 'tco new_eval_error("Do form has nothing to do".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::If), condition, true_case, false_case_plus_rest @ ..] =>
                 {
@@ -1019,10 +1208,10 @@ fn eval(ast: MalType, env: Env) -> Result<MalType, ReplError> {
                     continue 'tco;
                 }
                 [MalType::SpecialForm(SpecialKeyword::If), _] => {
-                    break 'tco eval_error("No cases to evaluate after condition");
+                    break 'tco new_eval_error("No cases to evaluate after condition".to_string());
                 }
                 [MalType::SpecialForm(SpecialKeyword::If)] => {
-                    break 'tco eval_error("No condition to evaluate");
+                    break 'tco new_eval_error("No condition to evaluate".to_string());
                 }
                 [MalType::SpecialForm(SpecialKeyword::Fn), MalType::List(param_syms) | MalType::Vector(param_syms), fn_ast, ..] =>
                 {
@@ -1034,7 +1223,7 @@ fn eval(ast: MalType, env: Env) -> Result<MalType, ReplError> {
                             Err(())
                         }
                     }) else {
-                        break 'tco eval_error("Parameters must all be symbols")
+                        break 'tco new_eval_error("Parameters must all be symbols".to_string())
                     };
                     break 'tco Ok(MalType::MalFunc {
                         fn_ast: Box::new(fn_ast.clone()),
@@ -1044,19 +1233,21 @@ fn eval(ast: MalType, env: Env) -> Result<MalType, ReplError> {
                     });
                 }
                 [MalType::SpecialForm(SpecialKeyword::Fn), MalType::List(_) | MalType::Vector(_)] => {
-                    break 'tco eval_error("Function definition has no body")
+                    break 'tco new_eval_error("Function definition has no body".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::Fn), _, ..] => {
-                    break 'tco eval_error("Function parameters must be a list or vector")
+                    break 'tco new_eval_error(
+                        "Function parameters must be a list or vector".to_string(),
+                    )
                 }
                 [MalType::SpecialForm(SpecialKeyword::Fn)] => {
-                    break 'tco eval_error("Function definition got no parameters list")
+                    break 'tco new_eval_error(
+                        "Function definition got no parameters list".to_string(),
+                    )
                 }
                 _ => match eval_ast(current_ast, current_env) {
                     Ok(MalType::List(res_list)) => match res_list.as_slice() {
-                        [MalType::LiftedFunc(_, f), args @ ..] => {
-                            break 'tco f(args.into()).map_err(ReplError::Eval)
-                        }
+                        [MalType::LiftedFunc(_, f), args @ ..] => break 'tco f(args.into()),
                         [MalType::MalFunc {
                             fn_ast,
                             params,
@@ -1066,10 +1257,24 @@ fn eval(ast: MalType, env: Env) -> Result<MalType, ReplError> {
                             current_ast = (**fn_ast).clone();
                             current_env = Env::with_bindings(Some(fn_env.clone()), params, args)?;
                         }
-                        [_, ..] => break 'tco eval_error("Expected first item to be a function"),
-                        [] => break 'tco eval_error("Function not found"),
+                        [item, ..] => {
+                            break 'tco new_eval_error(format!(
+                                "Expected first item to be a function; found {}",
+                                item.get_type(),
+                            ))
+                        }
+                        [] => {
+                            break 'tco new_eval_error(
+                                "Function not found; got back empty list".to_string(),
+                            )
+                        }
                     },
-                    Ok(_) => break 'tco eval_error("Expected a list"),
+                    Ok(item) => {
+                        break 'tco new_eval_error(format!(
+                            "Expected a list; got {}",
+                            item.get_type()
+                        ))
+                    }
                     Err(err) => break 'tco Err(err),
                 },
             };
@@ -1094,11 +1299,39 @@ fn rep(line: String, env: &Env) -> Result<(), ReplError> {
     Ok(())
 }
 
+pub fn get_cmd_args(env: &mut Env) -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    let Some(file_name) = args.next() else {
+        return None;
+    };
+    let rest = args.map(MalType::String).collect();
+    let _ = env.set(&MalType::Symbol("*ARGV*".to_string()), MalType::List(rest));
+    Some(file_name)
+}
+
 /// Runs the repl
 pub fn main() -> rustyline::Result<()> {
     let mut rl = DefaultEditor::new()?;
-    let mut repl_env = create_core_environment();
+    let mut repl_env = create_core_namespace();
     add_premade_lisp_fn_to(&mut repl_env);
+    if let Some(file) = get_cmd_args(&mut repl_env) {
+        let line = format!("(load-file \"{}\")", file);
+        if let Err(err) = rep(line, &repl_env) {
+            match err {
+                ReplError::Parse(ParseError::UnbalancedParen) => {
+                    println!("Unbalanced Paren");
+                }
+                ReplError::Eval(err) => {
+                    println!("Eval Error: {}", err);
+                }
+                _ => {
+                    println!("Unknown Error: {:?}", err);
+                }
+            }
+        };
+        return Ok(());
+    }
+
     loop {
         let line = match rl.readline("user> ") {
             Ok(line) => line,
@@ -1119,7 +1352,7 @@ pub fn main() -> rustyline::Result<()> {
                     println!("Eval Error: {}", err);
                 }
                 _ => {
-                    println!("Unknown ");
+                    println!("Unknown Error: {:?}", err);
                     break;
                 }
             }
@@ -1131,17 +1364,17 @@ pub fn main() -> rustyline::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        core::{add_premade_lisp_fn_to, create_core_environment},
+        core::{add_premade_lisp_fn_to, create_core_namespace},
         *,
     };
     static mut OUTPUT: Vec<String> = vec![];
 
-    pub fn simulate_print(args: Vec<MalType>) -> Result<MalType, String> {
+    pub fn simulate_print(args: Vec<MalType>) -> MalResult {
         let string = core::stringify_args(args, true, Some(" "));
         unsafe { OUTPUT.push(string) };
         Ok(MalType::Nil(()))
     }
-    pub fn simulate_println(args: Vec<MalType>) -> Result<MalType, String> {
+    pub fn simulate_println(args: Vec<MalType>) -> MalResult {
         let string = core::stringify_args(args, false, Some(" "));
 
         unsafe {
@@ -1156,7 +1389,7 @@ mod tests {
     }
 
     fn make_test_env() -> Env {
-        let mut test_env = create_core_environment();
+        let mut test_env = create_core_namespace();
         add_premade_lisp_fn_to(&mut test_env);
         test_env
     }
@@ -1178,6 +1411,7 @@ mod tests {
         run_test(file, make_test_env(), false);
     }
 
+    #[test]
     fn step_6_eval_tester() {
         let file = include_str!("../tests/step6_file.mal");
         run_test(file, make_test_env(), false);

@@ -7,5 +7,5 @@ mod step5_tco;
 mod step6_file;
 fn main() -> color_eyre::eyre::Result<()> {
     color_eyre::install()?;
-    Ok(step5_tco::main()?)
+    Ok(step6_file::main()?)
 }
