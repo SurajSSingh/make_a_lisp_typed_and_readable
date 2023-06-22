@@ -7,6 +7,7 @@ mod step3_env;
 mod step4_if_fn_do;
 mod step5_tco;
 mod step6_file;
+mod step7_quote;
 fn main() -> Result<(), Box<dyn Error>> {
-    Ok(step6_file::main()?)
+    Ok(step7_quote::main()?)
 }

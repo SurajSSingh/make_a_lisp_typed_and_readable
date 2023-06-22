@@ -116,6 +116,10 @@ pub(crate) mod reader {
         Do,
         If,
         Fn,
+        Quote,
+        Quasiquote,
+        Unquote,
+        SpliceUnquote,
     }
 
     impl Display for SpecialKeyword {
@@ -125,7 +129,11 @@ pub(crate) mod reader {
                 SpecialKeyword::Let => f.write_str("let*"),
                 SpecialKeyword::Do => f.write_str("do"),
                 SpecialKeyword::If => f.write_str("if"),
-                SpecialKeyword::Fn => f.write_str("fn"),
+                SpecialKeyword::Fn => f.write_str("fn*"),
+                SpecialKeyword::Quote => f.write_str("quote"),
+                SpecialKeyword::Quasiquote => f.write_str("quasiquote"),
+                SpecialKeyword::Unquote => f.write_str("unquote"),
+                SpecialKeyword::SpliceUnquote => f.write_str("splice-unquote"),
             }
         }
     }
@@ -135,10 +143,6 @@ pub(crate) mod reader {
     pub enum MalType {
         Nil(()),
         Bool(bool),
-        Quote(Box<MalType>),
-        Quasiquote(Box<MalType>),
-        Unquote(Box<MalType>),
-        SpliceUnquote(Box<MalType>),
         Meta(Vec<MalType>),
         Number(f64),
         Keyword(String),
@@ -164,10 +168,6 @@ pub(crate) mod reader {
             match self {
                 MalType::Nil(_) => "Nil".to_string(),
                 MalType::Bool(_) => "Bool".to_string(),
-                MalType::Quote(_) => "Quote".to_string(),
-                MalType::Quasiquote(_) => "Quasiquote".to_string(),
-                MalType::Unquote(_) => "Unquote".to_string(),
-                MalType::SpliceUnquote(_) => "SpliceUnquote".to_string(),
                 MalType::Meta(_) => "Meta".to_string(),
                 MalType::Number(_) => "Number".to_string(),
                 MalType::Keyword(_) => "Keyword".to_string(),
@@ -190,10 +190,6 @@ pub(crate) mod reader {
                 // Default cases
                 (Self::Nil(l0), Self::Nil(r0)) => l0 == r0,
                 (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
-                (Self::Quote(l0), Self::Quote(r0)) => l0 == r0,
-                (Self::Quasiquote(l0), Self::Quasiquote(r0)) => l0 == r0,
-                (Self::Unquote(l0), Self::Unquote(r0)) => l0 == r0,
-                (Self::SpliceUnquote(l0), Self::SpliceUnquote(r0)) => l0 == r0,
                 (Self::Meta(l0), Self::Meta(r0)) => l0 == r0,
                 (Self::Number(l0), Self::Number(r0)) => l0 == r0,
                 (Self::Keyword(l0), Self::Keyword(r0)) => l0 == r0,
@@ -238,10 +234,6 @@ pub(crate) mod reader {
             match self {
                 Self::Nil(()) => write!(f, "Nil"),
                 MalType::Bool(arg0) => f.debug_tuple("Bool").field(arg0).finish(),
-                Self::Quote(arg0) => f.debug_tuple("Quote").field(arg0).finish(),
-                Self::Quasiquote(arg0) => f.debug_tuple("Quasiquote").field(arg0).finish(),
-                Self::Unquote(arg0) => f.debug_tuple("Unquote").field(arg0).finish(),
-                Self::SpliceUnquote(arg0) => f.debug_tuple("SpliceUnquote").field(arg0).finish(),
                 Self::Meta(arg0) => f.debug_tuple("Meta").field(arg0).finish(),
                 Self::Number(arg0) => f.debug_tuple("Number").field(arg0).finish(),
                 Self::Keyword(arg0) => f.debug_tuple("Keyword").field(arg0).finish(),
@@ -351,12 +343,18 @@ pub(crate) mod reader {
                 Token::Quote => {
                     lex_list.pop_front();
                     let (form, remaining) = read_form(lex_list)?;
-                    Ok((MalType::Quote(Box::new(form)), remaining))
+                    Ok((
+                        MalType::List(vec![MalType::SpecialForm(SpecialKeyword::Quote), form]),
+                        remaining,
+                    ))
                 }
                 Token::Quasiquote => {
                     lex_list.pop_front();
                     let (form, remaining) = read_form(lex_list)?;
-                    Ok((MalType::Quasiquote(Box::new(form)), remaining))
+                    Ok((
+                        MalType::List(vec![MalType::SpecialForm(SpecialKeyword::Quasiquote), form]),
+                        remaining,
+                    ))
                 }
                 Token::Deref => {
                     lex_list.pop_front();
@@ -376,10 +374,22 @@ pub(crate) mod reader {
                         if matches!(token2, Token::Deref) {
                             lex_list.pop_front();
                             let (form, remaining) = read_form(lex_list)?;
-                            Ok((MalType::SpliceUnquote(Box::new(form)), remaining))
+                            Ok((
+                                MalType::List(vec![
+                                    MalType::SpecialForm(SpecialKeyword::SpliceUnquote),
+                                    form,
+                                ]),
+                                remaining,
+                            ))
                         } else {
                             let (form, remaining) = read_form(lex_list)?;
-                            Ok((MalType::Unquote(Box::new(form)), remaining))
+                            Ok((
+                                MalType::List(vec![
+                                    MalType::SpecialForm(SpecialKeyword::Unquote),
+                                    form,
+                                ]),
+                                remaining,
+                            ))
                         }
                     } else {
                         Err(ParseError::Eof)
@@ -566,6 +576,17 @@ pub(crate) mod reader {
                             "do" => Ok((MalType::SpecialForm(SpecialKeyword::Do), lex_list)),
                             "if" => Ok((MalType::SpecialForm(SpecialKeyword::If), lex_list)),
                             "fn*" => Ok((MalType::SpecialForm(SpecialKeyword::Fn), lex_list)),
+                            "quote" => Ok((MalType::SpecialForm(SpecialKeyword::Quote), lex_list)),
+                            "quasiquote" => {
+                                Ok((MalType::SpecialForm(SpecialKeyword::Quasiquote), lex_list))
+                            }
+                            "unquote" => {
+                                Ok((MalType::SpecialForm(SpecialKeyword::Unquote), lex_list))
+                            }
+                            "splice-unquote" => Ok((
+                                MalType::SpecialForm(SpecialKeyword::SpliceUnquote),
+                                lex_list,
+                            )),
                             c if c.starts_with(':') => {
                                 Ok((MalType::Keyword(atom.to_string()), lex_list))
                             }
@@ -607,10 +628,6 @@ pub(crate) mod printer {
             }
             MalType::Nil(_) => String::from("nil"),
             MalType::Bool(b) => b.to_string(),
-            MalType::Quote(q) => format!("(quote {})", pr_str(*q, print_readably)),
-            MalType::Quasiquote(q) => format!("(quasiquote {})", pr_str(*q, print_readably)),
-            MalType::Unquote(u) => format!("(unquote {})", pr_str(*u, print_readably)),
-            MalType::SpliceUnquote(s) => format!("(splice-quote {})", pr_str(*s, print_readably)),
             MalType::Meta(m) => format!(
                 "(with-meta {}",
                 m.into_iter()
@@ -953,6 +970,44 @@ pub(crate) mod core {
         }
     }
 
+    /// Takes a first item and a second item list, put them together with first item prepened to the list
+    pub fn cons(args: Vec<MalType>) -> MalResult {
+        // TODO: Use immutable data structure
+        match args.as_slice() {
+            [item, MalType::List(l) | MalType::Vector(l), ..] => {
+                Ok(MalType::List(once(item).chain(l.iter()).cloned().collect()))
+            }
+            [_, m, ..] => {
+                new_eval_error(format!("Second item must be a list; got {}", m.get_type()))
+            }
+            [] | [_] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Takes 0 or more lists and concatenates them together
+    pub fn concat(args: Vec<MalType>) -> MalResult {
+        // TODO: Use immutable data structure
+        Ok(MalType::List(
+            args.into_iter()
+                .map_while(|l| match l {
+                    MalType::List(l) | MalType::Vector(l) => Some(l),
+                    _ => None,
+                })
+                .flatten()
+                .collect(),
+        ))
+    }
+
+    /// Convert a list into a vector
+    pub fn vec(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::List(l), ..] => Ok(MalType::Vector(l.to_vec())),
+            [v @ MalType::Vector(_), ..] => Ok(v.clone()),
+            [m, ..] => new_eval_error(format!("Expect a list (or vector); got a {}", m.get_type())),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
     macro_rules! set_lift_op {
         // Unary operator
         ($repl_env:ident add $sym:expr, $func:path : $in_t1: path => $out_type:path) => {
@@ -1069,6 +1124,9 @@ pub(crate) mod core {
         set_core_fn!(env += deref);
         set_core_fn!(env += reset as "reset!");
         set_core_fn!(env += swap as "swap!");
+        set_core_fn!(env += cons);
+        set_core_fn!(env += concat);
+        set_core_fn!(env += vec);
 
         env.set(
             &MalType::Symbol("*ARGV*".to_string()),
@@ -1147,6 +1205,67 @@ fn eval_ast(expr: MalType, env: Env) -> MalResult {
             new_map.map(MalType::Map)
         }
         _ => Ok(expr),
+    }
+}
+
+fn quasiquote(ast: MalType) -> MalType {
+    match ast {
+        MalType::List(ref l) => match l.as_slice() {
+            [MalType::SpecialForm(SpecialKeyword::Unquote), sec, ..] => sec.clone(),
+            _ => {
+                let mut current_result = MalType::List(vec![]);
+                for elt in l.iter().rev() {
+                    if let MalType::List(el) = elt {
+                        if let Some(MalType::SpecialForm(SpecialKeyword::SpliceUnquote)) = el.get(0)
+                        {
+                            if let Some(sec) = el.get(1) {
+                                current_result = MalType::List(vec![
+                                    MalType::Symbol("concat".to_string()),
+                                    sec.clone(),
+                                    current_result.clone(),
+                                ]);
+
+                                continue;
+                            }
+                        }
+                    }
+                    current_result = MalType::List(vec![
+                        MalType::Symbol("cons".to_string()),
+                        quasiquote(elt.clone()),
+                        current_result.clone(),
+                    ]);
+                }
+                current_result
+            }
+        },
+        MalType::Vector(v) => {
+            let mut current_result = MalType::List(vec![]);
+            for elt in v.iter().rev() {
+                if let MalType::List(el) = elt {
+                    if let Some(MalType::SpecialForm(SpecialKeyword::SpliceUnquote)) = el.get(0) {
+                        if let Some(sec) = el.get(1) {
+                            current_result = MalType::List(vec![
+                                MalType::Symbol("concat".to_string()),
+                                sec.clone(),
+                                current_result.clone(),
+                            ]);
+
+                            continue;
+                        }
+                    }
+                }
+                current_result = MalType::List(vec![
+                    MalType::Symbol("cons".to_string()),
+                    quasiquote(elt.clone()),
+                    current_result.clone(),
+                ]);
+            }
+            MalType::List(vec![MalType::Symbol("vec".to_string()), current_result])
+        }
+        typ @ MalType::Map(_) | typ @ MalType::Symbol(_) => {
+            MalType::List(vec![MalType::SpecialForm(SpecialKeyword::Quote), typ])
+        }
+        _ => ast,
     }
 }
 
@@ -1268,6 +1387,25 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                     break 'tco new_eval_error(
                         "Function definition got no parameters list".to_string(),
                     )
+                }
+                [MalType::SpecialForm(SpecialKeyword::Quote), quoted, ..] => {
+                    break 'tco Ok(quoted.clone())
+                }
+                [MalType::SpecialForm(SpecialKeyword::Quote)] => {
+                    break 'tco new_eval_error("Nothing is quoted".to_string())
+                }
+                [MalType::SpecialForm(SpecialKeyword::Quasiquote), qqast, ..] => {
+                    current_ast = quasiquote(qqast.clone());
+                    continue 'tco;
+                }
+                [MalType::SpecialForm(SpecialKeyword::Quasiquote)] => {
+                    break 'tco new_eval_error("Nothing to quasi-quoted".to_string())
+                }
+                [MalType::Symbol(s), arg, ..] if s == "quasiquoteexpand" => {
+                    break 'tco Ok(quasiquote(arg.clone()));
+                }
+                [MalType::Symbol(s)] if s == "quasiquoteexpand" => {
+                    break 'tco new_eval_error("Nothing to quasi-quoted".to_string())
                 }
                 _ => match eval_ast(current_ast, current_env) {
                     Ok(MalType::List(res_list)) => match res_list.as_slice() {
@@ -1444,7 +1582,7 @@ mod tests {
     #[test]
     fn step_7_eval_tester() {
         let file = include_str!("../tests/step7_quote.mal");
-        run_test(file, make_test_env(), false);
+        run_test(file, make_test_env(), true);
     }
 
     fn run_test(file: &str, mut test_env: Env, print_line: bool) {
