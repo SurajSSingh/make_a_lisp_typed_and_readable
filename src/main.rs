@@ -8,6 +8,7 @@ mod step4_if_fn_do;
 mod step5_tco;
 mod step6_file;
 mod step7_quote;
+mod step8_macros;
 fn main() -> Result<(), Box<dyn Error>> {
-    Ok(step7_quote::main()?)
+    Ok(step8_macros::main()?)
 }
