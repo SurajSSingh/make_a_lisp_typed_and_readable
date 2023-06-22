@@ -1018,6 +1018,63 @@ pub(crate) mod core {
         }
     }
 
+    /// Get the nth item from a list or vector
+    pub fn nth(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::List(l) | MalType::Vector(l), MalType::Number(n), ..]
+                if n.is_sign_positive() && n.is_finite() =>
+            {
+                l.get(*n as usize)
+                    .cloned()
+                    .ok_or(ReplError::Eval("".to_string()))
+            }
+            [MalType::List(_) | MalType::Vector(_), MalType::Number(n), ..] => new_eval_error(
+                format!("Expect number to be an unsigned integer; got a {}", n),
+            ),
+            [MalType::List(_) | MalType::Vector(_), m, ..] => new_eval_error(format!(
+                "Expect a number as the second argument; got a {}",
+                m.get_type()
+            )),
+            [m, _, ..] => new_eval_error(format!(
+                "Expect a list or vector as the first argument; got a {}",
+                m.get_type()
+            )),
+            [] | [_] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Get the nth item from a list or vector
+    pub fn first(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::List(l) | MalType::Vector(l), ..] => Ok(l
+                .split_first()
+                .map(|(first, _)| first.clone())
+                .unwrap_or(MalType::Nil(()))),
+            [nil @ MalType::Nil(()), ..] => Ok(nil.clone()),
+            [m, ..] => new_eval_error(format!(
+                "Expect a list, vector, or nil as the first argument; got a {}",
+                m.get_type()
+            )),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
+    /// Get the nth item from a list or vector
+    pub fn rest(args: Vec<MalType>) -> MalResult {
+        match args.as_slice() {
+            [MalType::List(l) | MalType::Vector(l), ..] => Ok(l
+                .split_first()
+                .map(|(_, rest)| MalType::List(rest.to_vec()))
+                .unwrap_or(MalType::List(vec![]))),
+            [MalType::Nil(()), ..] => Ok(MalType::List(vec![])),
+            [m, ..] => new_eval_error(format!(
+                "Expect a list, vector, or nil as the first argument; got a {}",
+                m.get_type()
+            )),
+            [] => new_eval_error("Not enough arguments".to_string()),
+        }
+    }
+
     macro_rules! set_lift_op {
         // Unary operator
         ($repl_env:ident add $sym:expr, $func:path : $in_t1: path => $out_type:path) => {
@@ -1137,6 +1194,9 @@ pub(crate) mod core {
         set_core_fn!(env += cons);
         set_core_fn!(env += concat);
         set_core_fn!(env += vec);
+        set_core_fn!(env += nth);
+        set_core_fn!(env += first);
+        set_core_fn!(env += rest);
 
         env.set(
             &MalType::Symbol("*ARGV*".to_string()),
@@ -1153,6 +1213,7 @@ pub(crate) mod core {
         rep(String::from("(def! not (fn* (a) (if a false true)))"), env).unwrap();
         // Load file function
         rep(String::from(r#"(def! load-file (fn* (f) (eval (read-string (str "(do " (slurp f) "\nnil)")))))"#), env).unwrap();
+        rep(String::from("(defmacro! cond (fn* (& xs) (if (> (count xs) 0) (list 'if (first xs) (if (> (count xs) 1) (nth xs 1) (throw \"odd number of forms to cond\")) (cons 'cond (rest (rest xs)))))))"), env).unwrap();
         env
     }
 }
@@ -1279,11 +1340,62 @@ fn quasiquote(ast: MalType) -> MalType {
     }
 }
 
+/// Check if ast is a macro call; if it is, it returns the macro and the ast it applies to.
+///
+/// Slight modification from instruction to allow immediately returning the macro.
+/// Can emulate the actual behavior by calling `.is_some()` on the result.
+fn is_macro_call(ast: MalType, env: &Env) -> Option<(MalType, Vec<MalType>)> {
+    if let MalType::List(l) = ast {
+        if let Some((sym @ MalType::Symbol(_), rest)) = l.split_first() {
+            if let Ok(
+                mac @ MalType::MalFunc {
+                    fn_ast: _,
+                    params: _,
+                    fn_env: _,
+                    fn_val: _,
+                    is_macro: true,
+                },
+            ) = env.get(sym)
+            {
+                return Some((mac, rest.to_vec()));
+            }
+        }
+    }
+    None
+}
+
+/// Evaluates a given macro within an environment and returns its expanded form
+fn macroexpand(ast: MalType, env: &Env) -> MalResult {
+    let mut current_ast = ast;
+    while let Some((
+        MalType::MalFunc {
+            fn_ast,
+            params,
+            fn_env,
+            fn_val: _,
+            is_macro: _,
+        },
+        macro_args,
+    )) = is_macro_call(current_ast.clone(), env)
+    {
+        let new_env = Env::with_bindings(Some(fn_env), &params, &macro_args)?;
+        current_ast = eval(*fn_ast, new_env)?;
+    }
+    Ok(current_ast)
+}
+
 /// Evaluate the given expression and return the result
 fn eval(ast: MalType, env: Env) -> MalResult {
     let mut current_ast = ast;
     let mut current_env = env;
     let return_value: Result<MalType, ReplError> = 'tco: loop {
+        // Apply expand macro
+        if let MalType::List(_) = current_ast.clone() {
+            current_ast = macroexpand(current_ast.clone(), &current_env)?;
+        }
+        // Else skipped, as the result will be the same in the switch
+
+        // Evaluation "switch"
         if let MalType::List(ast_expr) = current_ast.clone() {
             match ast_expr.as_slice() {
                 // Special case #1: Empty list
@@ -1418,6 +1530,31 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                 [MalType::Symbol(s)] if s == "quasiquoteexpand" => {
                     break 'tco new_eval_error("Nothing to quasi-quoted".to_string())
                 }
+                [MalType::SpecialForm(SpecialKeyword::DefMacro), key @ MalType::Symbol(_), mform, ..] =>
+                {
+                    let MalType::MalFunc { fn_ast, params, fn_env, fn_val, is_macro: _ } = eval(mform.clone(), current_env.clone())? else {
+                        break 'tco new_eval_error("Did not evaluate a macro".to_string());
+                    };
+                    break 'tco current_env.set(
+                        key,
+                        MalType::MalFunc {
+                            fn_ast,
+                            params,
+                            fn_env,
+                            fn_val,
+                            is_macro: true,
+                        },
+                    );
+                }
+                [MalType::SpecialForm(SpecialKeyword::DefMacro), _, ..] => {
+                    break 'tco new_eval_error("Not a valid macro definition.".to_string())
+                }
+                [MalType::SpecialForm(SpecialKeyword::DefMacro)] => {
+                    break 'tco new_eval_error("No macro to define.".to_string())
+                }
+                [MalType::SpecialForm(SpecialKeyword::MacroExpand), mform, ..] => {
+                    break macroexpand(mform.clone(), &current_env)
+                }
                 _ => match eval_ast(current_ast, current_env) {
                     Ok(MalType::List(res_list)) => match res_list.as_slice() {
                         [MalType::LiftedFunc(_, f), args @ ..] => break 'tco f(args.into()),
@@ -1453,7 +1590,7 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                 },
             };
         } else {
-            // Otherwise, just evaluate the ast and return the result
+            // Otherwise (not a list), just evaluate the ast and return the result
             break 'tco eval_ast(current_ast, current_env.clone());
         }
     };
@@ -1594,13 +1731,13 @@ mod tests {
     #[test]
     fn step_7_eval_tester() {
         let file = include_str!("../tests/step7_quote.mal");
-        run_test(file, make_test_env(), true);
+        run_test(file, make_test_env(), false);
     }
 
     #[test]
     fn step_8_eval_tester() {
         let file = include_str!("../tests/step8_macros.mal");
-        run_test(file, make_test_env(), true);
+        run_test(file, make_test_env(), false);
     }
 
     fn run_test(file: &str, mut test_env: Env, print_line: bool) {
