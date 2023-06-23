@@ -211,14 +211,14 @@ pub(crate) mod reader {
                         params: _p0,
                         fn_env: _env0,
                         fn_val: _fn0,
-                        is_macro: m0,
+                        is_macro: _m0,
                     },
                     Self::MalFunc {
                         fn_ast: _ast1,
                         params: _p1,
                         fn_env: _env1,
                         fn_val: _fn1,
-                        is_macro: m1,
+                        is_macro: _m1,
                     },
                 ) => {
                     // FIXME: Currently, no two mal functions are the same
@@ -1127,8 +1127,8 @@ pub(crate) mod core {
                 fn_val: _,
                 is_macro: _,
             }, MalType::List(f_args) | MalType::Vector(f_args), ..] => Ok(MalType::List(
-                f_args.into_iter().try_fold(Vec::new(), |mut vec, a| {
-                    let env = Env::with_bindings(Some(fn_env.clone()), &params, &[a.clone()])?;
+                f_args.iter().try_fold(Vec::new(), |mut vec, a| {
+                    let env = Env::with_bindings(Some(fn_env.clone()), params, &[a.clone()])?;
                     match eval(*fn_ast.clone(), env) {
                         Ok(val) => {
                             vec.push(val);
@@ -1139,7 +1139,7 @@ pub(crate) mod core {
                 })?,
             )),
             [MalType::LiftedFunc(_, f), MalType::List(f_args) | MalType::Vector(f_args), ..] => Ok(
-                MalType::List(f_args.into_iter().try_fold(Vec::new(), |mut vec, a| {
+                MalType::List(f_args.iter().try_fold(Vec::new(), |mut vec, a| {
                     match f(vec![a.clone()]) {
                         Ok(val) => {
                             vec.push(val);
@@ -1325,7 +1325,7 @@ pub(crate) mod core {
     pub fn contains(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
             [MalType::Map(m), key, ..] => {
-                Ok(MalType::Bool(m.iter().find(|(k, v)| k == key).is_some()))
+                Ok(MalType::Bool(m.iter().find(|(k, _)| k == key).is_some()))
             }
             [m, ..] => new_eval_error(format!("Expected a hashmap, got {}", m.get_type())),
             [] => new_eval_error("Not enough arguments".to_string()),
@@ -1335,9 +1335,7 @@ pub(crate) mod core {
     /// Return a list of keys
     pub fn keys(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
-            [MalType::Map(m), ..] => Ok(MalType::List(
-                m.into_iter().map(|(k, _)| k).cloned().collect(),
-            )),
+            [MalType::Map(m), ..] => Ok(MalType::List(m.iter().map(|(k, _)| k).cloned().collect())),
             [_, ..] => Ok(MalType::Bool(false)),
             [] => new_eval_error("Not enough arguments".to_string()),
         }
@@ -1346,9 +1344,7 @@ pub(crate) mod core {
     /// Return a list of values
     pub fn vals(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
-            [MalType::Map(m), ..] => Ok(MalType::List(
-                m.into_iter().map(|(_, v)| v).cloned().collect(),
-            )),
+            [MalType::Map(m), ..] => Ok(MalType::List(m.iter().map(|(_, v)| v).cloned().collect())),
             [_, ..] => Ok(MalType::Bool(false)),
             [] => new_eval_error("Not enough arguments".to_string()),
         }
