@@ -957,7 +957,7 @@ mod tests {
 
     #[test]
     fn step_3_eval_tester() {
-        let file = include_str!("../tests/step4_if_fn_do.mal");
+        let file = include_str!("../../tests/step4_if_fn_do.mal");
         let mut test_env = create_default_environment();
         let mut result = Ok(MalType::Nil);
         for line in file.lines() {

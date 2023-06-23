@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn step_4_eval_tester() {
-        let file = include_str!("../tests/step4_if_fn_do.mal");
+        let file = include_str!("../../tests/step4_if_fn_do.mal");
         let mut test_env = create_core_environment();
         add_premade_lisp_fn_to(&mut test_env);
         test_env.set(

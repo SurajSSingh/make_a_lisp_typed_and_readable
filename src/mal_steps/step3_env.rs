@@ -772,7 +772,7 @@ mod tests {
 
     #[test]
     fn step_3_eval_tester() {
-        let file = include_str!("../tests/step3_env.mal");
+        let file = include_str!("../../tests/step3_env.mal");
         let mut test_env = create_default_environment();
         let mut result = Ok(MalType::Nil);
         for line in file.lines() {

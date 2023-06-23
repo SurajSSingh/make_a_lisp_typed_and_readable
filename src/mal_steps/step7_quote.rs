@@ -15,7 +15,14 @@ pub type MalResult = Result<MalType, ReplError>;
 
 pub(crate) mod reader {
 
-    use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc, vec};
+    use std::{
+        cell::RefCell,
+        collections::{HashMap, VecDeque},
+        fmt::Display,
+        ops::Deref,
+        rc::Rc,
+        vec,
+    };
 
     use logos::{Logos, Span};
 
@@ -113,10 +120,6 @@ pub(crate) mod reader {
         Quasiquote,
         Unquote,
         SpliceUnquote,
-        DefMacro,
-        MacroExpand,
-        Try,
-        Catch,
     }
 
     impl Display for SpecialKeyword {
@@ -131,10 +134,6 @@ pub(crate) mod reader {
                 SpecialKeyword::Quasiquote => f.write_str("quasiquote"),
                 SpecialKeyword::Unquote => f.write_str("unquote"),
                 SpecialKeyword::SpliceUnquote => f.write_str("splice-unquote"),
-                SpecialKeyword::DefMacro => f.write_str("defmacro!"),
-                SpecialKeyword::MacroExpand => f.write_str("macroexpand"),
-                SpecialKeyword::Try => f.write_str("try*"),
-                SpecialKeyword::Catch => f.write_str("catch*"),
             }
         }
     }
@@ -144,23 +143,22 @@ pub(crate) mod reader {
     pub enum MalType {
         Nil(()),
         Bool(bool),
+        Meta(Vec<MalType>),
         Number(f64),
         Keyword(String),
         /// Holds any special symbols
         SpecialForm(SpecialKeyword),
         Symbol(String),
         String(String),
-        List(Vec<MalType>, Box<MalType>),
-        Vector(Vec<MalType>, Box<MalType>),
-        Map(Vec<(MalType, MalType)>, Box<MalType>),
-        LiftedFunc(String, fn(Vec<MalType>) -> MalResult, Box<MalType>),
+        List(Vec<MalType>),
+        Vector(Vec<MalType>),
+        Map(Vec<(MalType, MalType)>),
+        LiftedFunc(String, fn(Vec<MalType>) -> MalResult),
         MalFunc {
             fn_ast: Box<MalType>,
             params: Vec<String>,
             fn_env: Env,
             fn_val: Box<MalType>,
-            is_macro: bool,
-            meta: Box<MalType>,
         },
         Atom(Rc<RefCell<MalType>>),
     }
@@ -170,15 +168,16 @@ pub(crate) mod reader {
             match self {
                 MalType::Nil(_) => "Nil".to_string(),
                 MalType::Bool(_) => "Bool".to_string(),
+                MalType::Meta(_) => "Meta".to_string(),
                 MalType::Number(_) => "Number".to_string(),
                 MalType::Keyword(_) => "Keyword".to_string(),
                 MalType::SpecialForm(form) => format!("Special-Form: {form}"),
                 MalType::Symbol(_) => "Symbol".to_string(),
                 MalType::String(_) => "String".to_string(),
-                MalType::List(_, _) => "List".to_string(),
-                MalType::Vector(_, _) => "Vector".to_string(),
-                MalType::Map(_, _) => "Map".to_string(),
-                MalType::LiftedFunc(_, _, _) => "Built-in Function".to_string(),
+                MalType::List(_) => "List".to_string(),
+                MalType::Vector(_) => "Vector".to_string(),
+                MalType::Map(_) => "Map".to_string(),
+                MalType::LiftedFunc(_, _) => "Built-in Function".to_string(),
                 MalType::MalFunc { .. } => "User Function".to_string(),
                 MalType::Atom(_) => "Atom".to_string(),
             }
@@ -191,42 +190,36 @@ pub(crate) mod reader {
                 // Default cases
                 (Self::Nil(l0), Self::Nil(r0)) => l0 == r0,
                 (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
+                (Self::Meta(l0), Self::Meta(r0)) => l0 == r0,
                 (Self::Number(l0), Self::Number(r0)) => l0 == r0,
                 (Self::Keyword(l0), Self::Keyword(r0)) => l0 == r0,
                 (Self::SpecialForm(l0), Self::SpecialForm(r0)) => l0 == r0,
                 (Self::Symbol(l0), Self::Symbol(r0)) => l0 == r0,
                 (Self::String(l0), Self::String(r0)) => l0 == r0,
-                (Self::List(l0, _), Self::List(r0, _)) => l0 == r0,
-                (Self::Vector(l0, _), Self::Vector(r0, _)) => l0 == r0,
-                (Self::Map(l0, _), Self::Map(r0, _)) => l0
-                    .iter()
-                    .all(|(k1, v1)| r0.iter().any(|(k2, v2)| k1 == k2 && v1 == v2)),
+                (Self::List(l0), Self::List(r0)) => l0 == r0,
+                (Self::Vector(l0), Self::Vector(r0)) => l0 == r0,
+                (Self::Map(l0), Self::Map(r0)) => l0 == r0,
                 (Self::Atom(a0), Self::Atom(a1)) => a0 == a1,
-                (Self::LiftedFunc(l0, _l1, _), Self::LiftedFunc(r0, _r1, _)) => l0 == r0,
+                (Self::LiftedFunc(l0, _l1), Self::LiftedFunc(r0, _r1)) => l0 == r0,
                 (
                     Self::MalFunc {
                         fn_ast: _ast0,
                         params: _p0,
                         fn_env: _env0,
                         fn_val: _fn0,
-                        is_macro: _m0,
-                        meta: _meta0,
                     },
                     Self::MalFunc {
                         fn_ast: _ast1,
                         params: _p1,
                         fn_env: _env1,
                         fn_val: _fn1,
-                        is_macro: _m1,
-                        meta: _meta1,
                     },
                 ) => {
                     // FIXME: Currently, no two mal functions are the same
                     false
                 }
                 // Special case: Equal length List and Vector
-                (Self::List(lst, _), Self::Vector(vec, _))
-                | (Self::Vector(vec, _), Self::List(lst, _))
+                (Self::List(lst), Self::Vector(vec)) | (Self::Vector(vec), Self::List(lst))
                     if lst.len() == vec.len() =>
                 {
                     lst.iter().zip(vec.iter()).all(|(l, r)| l == r)
@@ -241,31 +234,27 @@ pub(crate) mod reader {
             match self {
                 Self::Nil(()) => write!(f, "Nil"),
                 MalType::Bool(arg0) => f.debug_tuple("Bool").field(arg0).finish(),
+                Self::Meta(arg0) => f.debug_tuple("Meta").field(arg0).finish(),
                 Self::Number(arg0) => f.debug_tuple("Number").field(arg0).finish(),
                 Self::Keyword(arg0) => f.debug_tuple("Keyword").field(arg0).finish(),
                 Self::SpecialForm(arg0) => f.debug_tuple("SpecialForm").field(arg0).finish(),
                 Self::Symbol(arg0) => f.debug_tuple("Symbol").field(arg0).finish(),
                 Self::String(arg0) => f.debug_tuple("String").field(arg0).finish(),
-                Self::List(arg0, _) => f.debug_tuple("List").field(arg0).finish(),
-                Self::Vector(arg0, _) => f.debug_tuple("Vector").field(arg0).finish(),
-                Self::Map(arg0, _) => f.debug_tuple("Map").field(arg0).finish(),
-                Self::LiftedFunc(arg0, _arg1, _) => {
-                    f.debug_tuple("LiftedFunc").field(arg0).finish()
-                }
+                Self::List(arg0) => f.debug_tuple("List").field(arg0).finish(),
+                Self::Vector(arg0) => f.debug_tuple("Vector").field(arg0).finish(),
+                Self::Map(arg0) => f.debug_tuple("Map").field(arg0).finish(),
+                Self::LiftedFunc(arg0, _arg1) => f.debug_tuple("LiftedFunc").field(arg0).finish(),
                 Self::MalFunc {
                     fn_ast,
                     params,
                     fn_env,
                     fn_val,
-                    is_macro,
-                    meta: _meta,
                 } => f
                     .debug_struct("MalFunc")
                     .field("fn_ast", fn_ast)
                     .field("params", params)
                     .field("fn_env", fn_env)
                     .field("fn_val", fn_val)
-                    .field("is_macro", is_macro)
                     .finish(),
                 Self::Atom(a) => f.debug_tuple("Atom").field(a).finish(),
             }
@@ -355,10 +344,7 @@ pub(crate) mod reader {
                     lex_list.pop_front();
                     let (form, remaining) = read_form(lex_list)?;
                     Ok((
-                        MalType::List(
-                            vec![MalType::SpecialForm(SpecialKeyword::Quote), form],
-                            Box::new(MalType::Nil(())),
-                        ),
+                        MalType::List(vec![MalType::SpecialForm(SpecialKeyword::Quote), form]),
                         remaining,
                     ))
                 }
@@ -366,10 +352,7 @@ pub(crate) mod reader {
                     lex_list.pop_front();
                     let (form, remaining) = read_form(lex_list)?;
                     Ok((
-                        MalType::List(
-                            vec![MalType::SpecialForm(SpecialKeyword::Quasiquote), form],
-                            Box::new(MalType::Nil(())),
-                        ),
+                        MalType::List(vec![MalType::SpecialForm(SpecialKeyword::Quasiquote), form]),
                         remaining,
                     ))
                 }
@@ -377,24 +360,13 @@ pub(crate) mod reader {
                     lex_list.pop_front();
                     let (form, remaining) = read_form(lex_list)?;
                     Ok((
-                        MalType::List(
-                            vec![MalType::Symbol("deref".to_string()), form],
-                            Box::new(MalType::Nil(())),
-                        ),
+                        MalType::List(vec![MalType::Symbol("deref".to_string()), form]),
                         remaining,
                     ))
                 }
                 Token::Meta => {
                     lex_list.pop_front();
-                    let (meta, rem1) = read_form(lex_list)?;
-                    let (form, rem2) = read_form(rem1)?;
-                    Ok((
-                        MalType::List(
-                            vec![MalType::Symbol("with-meta".to_string()), form, meta],
-                            Box::new(MalType::Nil(())),
-                        ),
-                        rem2,
-                    ))
+                    Ok(read_meta(lex_list)?)
                 }
                 Token::Unquote => {
                     lex_list.pop_front();
@@ -403,19 +375,19 @@ pub(crate) mod reader {
                             lex_list.pop_front();
                             let (form, remaining) = read_form(lex_list)?;
                             Ok((
-                                MalType::List(
-                                    vec![MalType::SpecialForm(SpecialKeyword::SpliceUnquote), form],
-                                    Box::new(MalType::Nil(())),
-                                ),
+                                MalType::List(vec![
+                                    MalType::SpecialForm(SpecialKeyword::SpliceUnquote),
+                                    form,
+                                ]),
                                 remaining,
                             ))
                         } else {
                             let (form, remaining) = read_form(lex_list)?;
                             Ok((
-                                MalType::List(
-                                    vec![MalType::SpecialForm(SpecialKeyword::Unquote), form],
-                                    Box::new(MalType::Nil(())),
-                                ),
+                                MalType::List(vec![
+                                    MalType::SpecialForm(SpecialKeyword::Unquote),
+                                    form,
+                                ]),
                                 remaining,
                             ))
                         }
@@ -430,6 +402,23 @@ pub(crate) mod reader {
         }
     }
 
+    /// Read a meta
+    ///
+    /// Example: ^{"a" 1} [1 2 3] -> (with-meta [1 2 3] {"a" 1})
+    fn read_meta<'t>(
+        lex_list: &'t mut VecDeque<Token<'t>>,
+    ) -> Result<(MalType, &'t mut VecDeque<Token<'t>>), ParseError> {
+        let mut list = Vec::new();
+        let mut rem = lex_list;
+        while rem.get(0).is_some() {
+            let (result, remaining) = read_form(rem)?;
+            list.push(result);
+            rem = remaining;
+        }
+        list.reverse();
+        Ok((MalType::Meta(list), rem))
+    }
+
     /// Read a list
     fn read_list<'t>(
         lex_list: &'t mut VecDeque<Token<'t>>,
@@ -440,7 +429,7 @@ pub(crate) mod reader {
             match token {
                 Token::CloseParen => {
                     rem.pop_front();
-                    return Ok((MalType::List(list, Box::new(MalType::Nil(()))), rem));
+                    return Ok((MalType::List(list), rem));
                 }
                 _ => {
                     let (result, remaining) = read_form(rem)?;
@@ -465,7 +454,7 @@ pub(crate) mod reader {
             match token {
                 Token::CloseBracket => {
                     rem.pop_front();
-                    return Ok((MalType::Vector(list, Box::new(MalType::Nil(()))), rem));
+                    return Ok((MalType::Vector(list), rem));
                 }
                 _ => {
                     let (result, remaining) = read_form(rem)?;
@@ -491,7 +480,7 @@ pub(crate) mod reader {
             match token {
                 Token::CloseBrace => {
                     rem.pop_front();
-                    return Ok((MalType::Map(map, Box::new(MalType::Nil(()))), rem));
+                    return Ok((MalType::Map(map), rem));
                 }
                 _ => {
                     let (key, remaining_first) = read_form(rem)?;
@@ -587,12 +576,6 @@ pub(crate) mod reader {
                             "do" => Ok((MalType::SpecialForm(SpecialKeyword::Do), lex_list)),
                             "if" => Ok((MalType::SpecialForm(SpecialKeyword::If), lex_list)),
                             "fn*" => Ok((MalType::SpecialForm(SpecialKeyword::Fn), lex_list)),
-                            "defmacro!" => {
-                                Ok((MalType::SpecialForm(SpecialKeyword::DefMacro), lex_list))
-                            }
-                            "macroexpand" => {
-                                Ok((MalType::SpecialForm(SpecialKeyword::MacroExpand), lex_list))
-                            }
                             "quote" => Ok((MalType::SpecialForm(SpecialKeyword::Quote), lex_list)),
                             "quasiquote" => {
                                 Ok((MalType::SpecialForm(SpecialKeyword::Quasiquote), lex_list))
@@ -604,8 +587,6 @@ pub(crate) mod reader {
                                 MalType::SpecialForm(SpecialKeyword::SpliceUnquote),
                                 lex_list,
                             )),
-                            "try*" => Ok((MalType::SpecialForm(SpecialKeyword::Try), lex_list)),
-                            "catch*" => Ok((MalType::SpecialForm(SpecialKeyword::Catch), lex_list)),
                             c if c.starts_with(':') => {
                                 Ok((MalType::Keyword(atom.to_string()), lex_list))
                             }
@@ -613,10 +594,7 @@ pub(crate) mod reader {
                         }
                     }
                 }
-                c => {
-                    dbg!(c);
-                    unreachable!()
-                }
+                _ => unreachable!(),
             }
         } else {
             Err(ParseError::Eof)
@@ -650,25 +628,32 @@ pub(crate) mod printer {
             }
             MalType::Nil(_) => String::from("nil"),
             MalType::Bool(b) => b.to_string(),
+            MalType::Meta(m) => format!(
+                "(with-meta {}",
+                m.into_iter()
+                    .map(|t| pr_str(t, print_readably))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
             MalType::Number(n) => n.to_string(),
             MalType::Keyword(k) => k,
             MalType::SpecialForm(k) => k.to_string(),
             MalType::Symbol(s) => s,
-            MalType::List(l, _) => format!(
+            MalType::List(l) => format!(
                 "({})",
                 l.into_iter()
                     .map(|m| pr_str(m, print_readably))
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            MalType::Vector(v, _) => format!(
+            MalType::Vector(v) => format!(
                 "[{}]",
                 v.into_iter()
                     .map(|m| pr_str(m, print_readably))
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            MalType::Map(m, _) => format!(
+            MalType::Map(m) => format!(
                 "{{{}}}",
                 m.into_iter()
                     .map(|(k, v)| format!(
@@ -679,14 +664,12 @@ pub(crate) mod printer {
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            MalType::LiftedFunc(n, _, _) => format!("Built-in Function: {n}"),
+            MalType::LiftedFunc(n, _) => format!("Built-in Function: {n}"),
             MalType::MalFunc {
                 fn_ast,
                 params,
                 fn_env: _,
                 fn_val: _,
-                is_macro: _,
-                meta: _,
             } => format!("(fn* ({}) {fn_ast})", params.join(" ")),
             MalType::Atom(a) => format!("(atom {})", pr_str(a.borrow().clone(), print_readably)),
         }
@@ -742,9 +725,9 @@ pub(crate) mod env {
                         "No name found for variadic arguments; there must be a name after the '&' symbol",
                     ));
                 };
-                let val = exprs.get((start - 1)..).map_or(MalType::Nil(()), |args| {
-                    MalType::List(args.to_vec(), Box::new(MalType::Nil(())))
-                });
+                let val = exprs
+                    .get((start - 1)..)
+                    .map_or(MalType::Nil(()), |args| MalType::List(args.to_vec()));
                 env.set(&key, val)?;
             }
             Ok(env)
@@ -766,7 +749,7 @@ pub(crate) mod env {
                 return new_eval_error(format!("The key is not a symbol: got {}", key));
             };
             let Some(env) = self.find(sym) else {
-                return new_eval_error(format!("'{}' not found", sym));
+                return new_eval_error(format!("Could not find the key: {}", sym));
             };
             let val = env
                 .0
@@ -774,7 +757,7 @@ pub(crate) mod env {
                 .borrow()
                 .get(sym)
                 .cloned()
-                .ok_or(ReplError::Eval(format!("'{}' not found", sym)))?;
+                .ok_or(ReplError::Eval(format!("Could not find the key: {}", sym)))?;
             Ok(val)
         }
 
@@ -839,13 +822,13 @@ pub(crate) mod core {
 
     /// Convert all arguments to a list
     pub fn to_list(args: Vec<MalType>) -> MalResult {
-        Ok(MalType::List(args, Box::new(MalType::Nil(()))))
+        Ok(MalType::List(args))
     }
 
     /// Check if first argument is a list
     pub fn is_list(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
-            [MalType::List(_, _), ..] => Ok(MalType::Bool(true)),
+            [MalType::List(_), ..] => Ok(MalType::Bool(true)),
             [_, ..] => Ok(MalType::Bool(false)),
             [] => new_eval_error("Not enough arguments".to_string()),
         }
@@ -854,8 +837,8 @@ pub(crate) mod core {
     /// Check if first argument is empty
     pub fn is_empty(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
-            [MalType::List(v, _) | MalType::Vector(v, _), ..] => Ok(MalType::Bool(v.is_empty())),
-            [MalType::Map(m, _), ..] => Ok(MalType::Bool(m.is_empty())),
+            [MalType::List(v) | MalType::Vector(v), ..] => Ok(MalType::Bool(v.is_empty())),
+            [MalType::Map(m), ..] => Ok(MalType::Bool(m.is_empty())),
             [t, ..] => new_eval_error(format!(
                 "Not a valid type; expected a list, vector, or map, but got {}",
                 t.get_type()
@@ -867,10 +850,8 @@ pub(crate) mod core {
     /// Check the number of elements in first argument
     pub fn count(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
-            [MalType::List(v, _) | MalType::Vector(v, _), ..] => {
-                Ok(MalType::Number(v.len() as f64))
-            }
-            [MalType::Map(m, _), ..] => Ok(MalType::Number(m.len() as f64)),
+            [MalType::List(v) | MalType::Vector(v), ..] => Ok(MalType::Number(v.len() as f64)),
+            [MalType::Map(m), ..] => Ok(MalType::Number(m.len() as f64)),
             [MalType::Nil(()), ..] => Ok(MalType::Number(0.0)),
             [t, ..] => new_eval_error(format!(
                 "Not a valid type; expected a list, vector, map, or nil, but got {}",
@@ -960,7 +941,7 @@ pub(crate) mod core {
     /// Use a function to update the value of an atom
     pub fn swap(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
-            [MalType::Atom(a), MalType::LiftedFunc(_, f, _), extra_args @ ..] => {
+            [MalType::Atom(a), MalType::LiftedFunc(_, f), extra_args @ ..] => {
                 let new_value = f(once(a.borrow().clone())
                     .chain(extra_args.iter().cloned())
                     .collect())?;
@@ -972,8 +953,6 @@ pub(crate) mod core {
                 params,
                 fn_env,
                 fn_val: _,
-                is_macro: _,
-                meta: _,
             }, extra_args @ ..] => {
                 let env = Env::with_bindings(
                     Some(fn_env.clone()),
@@ -995,10 +974,9 @@ pub(crate) mod core {
     pub fn cons(args: Vec<MalType>) -> MalResult {
         // TODO: Use immutable data structure
         match args.as_slice() {
-            [item, MalType::List(l, _) | MalType::Vector(l, _), ..] => Ok(MalType::List(
-                once(item).chain(l.iter()).cloned().collect(),
-                Box::new(MalType::Nil(())),
-            )),
+            [item, MalType::List(l) | MalType::Vector(l), ..] => {
+                Ok(MalType::List(once(item).chain(l.iter()).cloned().collect()))
+            }
             [_, m, ..] => {
                 new_eval_error(format!("Second item must be a list; got {}", m.get_type()))
             }
@@ -1012,531 +990,20 @@ pub(crate) mod core {
         Ok(MalType::List(
             args.into_iter()
                 .map_while(|l| match l {
-                    MalType::List(l, _) | MalType::Vector(l, _) => Some(l),
+                    MalType::List(l) | MalType::Vector(l) => Some(l),
                     _ => None,
                 })
                 .flatten()
                 .collect(),
-            Box::new(MalType::Nil(())),
         ))
     }
 
     /// Convert a list into a vector
     pub fn vec(args: Vec<MalType>) -> MalResult {
         match args.as_slice() {
-            [MalType::List(l, _), ..] => {
-                Ok(MalType::Vector(l.to_vec(), Box::new(MalType::Nil(()))))
-            }
-            [v @ MalType::Vector(_, _), ..] => Ok(v.clone()),
+            [MalType::List(l), ..] => Ok(MalType::Vector(l.to_vec())),
+            [v @ MalType::Vector(_), ..] => Ok(v.clone()),
             [m, ..] => new_eval_error(format!("Expect a list (or vector); got a {}", m.get_type())),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Get the nth item from a list or vector
-    pub fn nth(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::List(l, _) | MalType::Vector(l, _), MalType::Number(n), ..]
-                if n.is_sign_positive() && n.is_finite() =>
-            {
-                l.get(*n as usize)
-                    .cloned()
-                    .ok_or(ReplError::Eval("Out of bounds".to_string()))
-            }
-            [MalType::List(_, _) | MalType::Vector(_, _), MalType::Number(n), ..] => {
-                new_eval_error(format!(
-                    "Expect number to be an unsigned integer; got a {}",
-                    n
-                ))
-            }
-            [MalType::List(_, _) | MalType::Vector(_, _), m, ..] => new_eval_error(format!(
-                "Expect a number as the second argument; got a {}",
-                m.get_type()
-            )),
-            [m, _, ..] => new_eval_error(format!(
-                "Expect a list or vector as the first argument; got a {}",
-                m.get_type()
-            )),
-            [] | [_] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Get the nth item from a list or vector
-    pub fn first(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::List(l, _) | MalType::Vector(l, _), ..] => Ok(l
-                .split_first()
-                .map(|(first, _)| first.clone())
-                .unwrap_or(MalType::Nil(()))),
-            [nil @ MalType::Nil(()), ..] => Ok(nil.clone()),
-            [m, ..] => new_eval_error(format!(
-                "Expect a list, vector, or nil as the first argument; got a {}",
-                m.get_type()
-            )),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Get the nth item from a list or vector
-    pub fn rest(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::List(l, _) | MalType::Vector(l, _), ..] => Ok(l
-                .split_first()
-                .map(|(_, rest)| MalType::List(rest.to_vec(), Box::new(MalType::Nil(()))))
-                .unwrap_or(MalType::List(vec![], Box::new(MalType::Nil(()))))),
-            [MalType::Nil(()), ..] => Ok(MalType::List(vec![], Box::new(MalType::Nil(())))),
-            [m, ..] => new_eval_error(format!(
-                "Expect a list, vector, or nil as the first argument; got a {}",
-                m.get_type()
-            )),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Throws the first argument as an exception
-    pub fn throw(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [exception, ..] => Err(ReplError::Exception(exception.clone())),
-            [] => new_eval_error("No argument to throw".to_string()),
-        }
-    }
-
-    /// Applies the first argument (as function) to the rest of the arguments
-    pub fn apply_fn(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::MalFunc {
-                fn_ast,
-                params,
-                fn_env,
-                fn_val: _,
-                is_macro: _,
-                meta: _,
-            }, middle @ .., MalType::List(v, _) | MalType::Vector(v, _)] => {
-                let mut a = middle.to_vec();
-                a.extend_from_slice(v);
-                let env = Env::with_bindings(Some(fn_env.clone()), params, &a)?;
-                eval((**fn_ast).clone(), env)
-            }
-            // TODO: Change how concatenation is handled
-            [MalType::LiftedFunc(_, f, _), middle @ .., MalType::List(v, _) | MalType::Vector(v, _)] =>
-            {
-                let mut a = middle.to_vec();
-                a.extend_from_slice(v);
-                f(a)
-            }
-            [m, ..] => new_eval_error(format!("Expected a function, got {}", m.get_type())),
-            [] => new_eval_error("No function given".to_string()),
-        }
-    }
-
-    /// Maps the first argument (as function) to each of the rest of the arguments
-    pub fn map_fn(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::MalFunc {
-                fn_ast,
-                params,
-                fn_env,
-                fn_val: _,
-                is_macro: _,
-                meta: _,
-            }, MalType::List(f_args, _) | MalType::Vector(f_args, _), ..] => Ok(MalType::List(
-                f_args.iter().try_fold(Vec::new(), |mut vec, a| {
-                    let env = Env::with_bindings(Some(fn_env.clone()), params, &[a.clone()])?;
-                    match eval(*fn_ast.clone(), env) {
-                        Ok(val) => {
-                            vec.push(val);
-                            Ok(vec)
-                        }
-                        Err(err) => Err(err),
-                    }
-                })?,
-                Box::new(MalType::Nil(())),
-            )),
-            [MalType::LiftedFunc(_, f, _), MalType::List(f_args, _) | MalType::Vector(f_args, _), ..] => {
-                Ok(MalType::List(
-                    f_args
-                        .iter()
-                        .try_fold(Vec::new(), |mut vec, a| match f(vec![a.clone()]) {
-                            Ok(val) => {
-                                vec.push(val);
-                                Ok(vec)
-                            }
-                            Err(err) => Err(err),
-                        })?,
-                    Box::new(MalType::Nil(())),
-                ))
-            }
-            [m, ..] => new_eval_error(format!("Expected a function, got {}", m.get_type())),
-            [] => new_eval_error("No function given".to_string()),
-        }
-    }
-
-    /// Check if first argument is nil value (exactly nil type, not empty collection)
-    pub fn is_nil(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Nil(()), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Check if first argument is true value
-    pub fn is_true(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Bool(true), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Check if first argument is false value
-    pub fn is_false(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Bool(false), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Check if first argument is a symbol
-    pub fn is_symbol(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Symbol(_), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Converts a string to a symbol with that string name
-    pub fn to_symbol(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::String(s), ..] => Ok(MalType::Symbol(s.clone())),
-            [m, ..] => new_eval_error(format!("Cannot make symbol out of type {}", m.get_type())),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Converts a string into a keyword with that string name
-    pub fn to_keyword(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::String(s), ..] => Ok(MalType::Keyword(format!(":{s}"))),
-            [keyword @ MalType::Keyword(_), ..] => Ok(keyword.clone()),
-            [m, ..] => new_eval_error(format!("Cannot make symbol out of type {}", m.get_type())),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Checks if the first argument is a keyword
-    pub fn is_keyword(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Keyword(_), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Collects variable number of arguments into a vector
-    pub fn to_vector(args: Vec<MalType>) -> MalResult {
-        Ok(MalType::Vector(args, Box::new(MalType::Nil(()))))
-    }
-
-    /// Checks if the first argument is a vector
-    pub fn is_vector(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Vector(_, _), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Checks if the first argument is a sequential type (list or vector)
-    pub fn is_sequential(args: Vec<MalType>) -> MalResult {
-        match is_list(args.clone()) {
-            Ok(MalType::Bool(true)) => Ok(MalType::Bool(true)),
-            Ok(MalType::Bool(false)) => is_vector(args),
-            Err(err) => Err(err),
-            _ => new_eval_error("Non-boolean result found".to_string()),
-        }
-    }
-
-    /// Create a hash map from key value pairs
-    pub fn to_hash_map(args: Vec<MalType>) -> MalResult {
-        Ok(MalType::Map(
-            args.chunks_exact(2)
-                .map(|x| match x {
-                    [k, v] => (k.clone(), v.clone()),
-                    _ => panic!("Chunk size is incorrect"),
-                })
-                .collect(),
-            Box::new(MalType::Nil(())),
-        ))
-    }
-
-    /// Check if the first argument is a hash map
-    pub fn is_map(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Map(_, _), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Create a new hash map from the merging of a starting hash map and a list of key-value pairs
-    ///
-    /// FIXME: Inefficient checking because not using underlying hash map
-    pub fn assoc(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Map(m, _), kv @ ..] => {
-                let updater = kv
-                    .chunks_exact(2)
-                    .map(|x| match x {
-                        [k, v] => (k.clone(), v.clone()),
-                        _ => panic!("Chunk size is incorrect"),
-                    })
-                    .collect::<Vec<_>>();
-                let kept = m
-                    .iter()
-                    .filter(|(k1, _)| !updater.iter().any(|(k2, _)| k1 == k2))
-                    .chain(updater.iter())
-                    .cloned()
-                    .collect::<Vec<_>>();
-                Ok(MalType::Map(kept, Box::new(MalType::Nil(()))))
-            }
-            [m, ..] => new_eval_error(format!("Expected a hashmap, got {}", m.get_type())),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Create a new hash map from the deletion of a starting hash map with a list of key-value pairs
-    ///
-    /// FIXME: Inefficient checking because not using underlying hash map
-    pub fn dissoc(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Map(m, _), keys @ ..] => {
-                let kept = m
-                    .iter()
-                    .filter(|(k1, _)| !keys.iter().any(|k2| k1 == k2))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                Ok(MalType::Map(kept, Box::new(MalType::Nil(()))))
-            }
-            [m, ..] => new_eval_error(format!("Expected a hashmap, got {}", m.get_type())),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Given a hash map and and key, get the value at the given key in the hash map or return nil
-    pub fn get(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Map(m, _), key, ..] => Ok(m
-                .iter()
-                .find(|(k, _)| k == key)
-                .map(|(_, v)| v.clone())
-                .unwrap_or(MalType::Nil(()))),
-            [MalType::Nil(()), ..] => Ok(MalType::Nil(())),
-            [m, ..] => new_eval_error(format!("Expected a hashmap, got {}", m.get_type())),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Checks if a given hash map contains a given key
-    pub fn contains(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Map(m, _), key, ..] => Ok(MalType::Bool(m.iter().any(|(k, _)| k == key))),
-            [m, ..] => new_eval_error(format!("Expected a hashmap, got {}", m.get_type())),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Return a list of keys
-    pub fn keys(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Map(m, _), ..] => Ok(MalType::List(
-                m.iter().map(|(k, _)| k).cloned().collect(),
-                Box::new(MalType::Nil(())),
-            )),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Return a list of values
-    pub fn vals(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Map(m, _), ..] => Ok(MalType::List(
-                m.iter().map(|(_, v)| v).cloned().collect(),
-                Box::new(MalType::Nil(())),
-            )),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Read a line from the user
-    pub fn readline(args: Vec<MalType>) -> MalResult {
-        let mut r = rustyline::DefaultEditor::new()
-            .map_err(|e| ReplError::Eval(format!("Editor Err: {}", e)))?;
-        let response = r.readline(match args.as_slice() {
-            [MalType::String(prompt), ..] => prompt,
-            _ => "",
-        });
-        match response {
-            Ok(line) => pr_dash_str(vec![super::read(line)?]),
-            Err(rustyline::error::ReadlineError::Eof) => Ok(MalType::Nil(())),
-            Err(err) => Err(ReplError::Eval(err.to_string())),
-        }
-    }
-
-    /// The current time in nanoseconds from the UNIX epoch
-    pub fn time_ms(_args: Vec<MalType>) -> MalResult {
-        use std::time::SystemTime;
-
-        match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(n) => Ok(MalType::Number(n.as_millis() as f64)),
-            Err(_) => Err(ReplError::Eval("SystemTime before UNIX EPOCH!".to_string())),
-        }
-    }
-
-    /// Get meta information of collection
-    pub fn meta(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::List(_, m)
-            | MalType::Vector(_, m)
-            | MalType::Map(_, m)
-            | MalType::LiftedFunc(_, _, m)
-            | MalType::MalFunc { meta: m, .. }, ..] => Ok((**m).clone()),
-            [m, ..] => new_eval_error(format!("Type {} does not have metadata", m)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Add meta information to a collection
-    pub fn with_meta(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::List(val, _), data, ..] => {
-                Ok(MalType::List(val.to_vec(), Box::new(data.clone())))
-            }
-            [MalType::Vector(val, _), data, ..] => {
-                Ok(MalType::Vector(val.to_vec(), Box::new(data.clone())))
-            }
-            [MalType::Map(val, _), data, ..] => {
-                Ok(MalType::Map(val.to_vec(), Box::new(data.clone())))
-            }
-            [MalType::LiftedFunc(name, val, _), data, ..] => Ok(MalType::LiftedFunc(
-                name.to_string(),
-                *val,
-                Box::new(data.clone()),
-            )),
-            [MalType::MalFunc {
-                fn_ast,
-                params,
-                fn_env,
-                fn_val,
-                is_macro,
-                meta: _,
-            }, data, ..] => Ok(MalType::MalFunc {
-                fn_ast: fn_ast.clone(),
-                params: params.to_vec(),
-                fn_env: fn_env.clone(),
-                fn_val: fn_val.clone(),
-                is_macro: *is_macro,
-                meta: Box::new(data.clone()),
-            }),
-            [m, _, ..] => new_eval_error(format!("Type {} does not have metadata", m)),
-            [] | [_] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Check if the first argument is string
-    pub fn is_string(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::String(_), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Check if the first argument is number
-    pub fn is_number(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::Number(_), ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Check if the first argument is a function
-    pub fn is_function(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::LiftedFunc(_, _, _)
-            | MalType::MalFunc {
-                fn_ast: _,
-                params: _,
-                fn_env: _,
-                fn_val: _,
-                is_macro: false,
-                meta: _,
-            }, ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Check if the first argument is a macro
-    pub fn is_macro(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::MalFunc {
-                fn_ast: _,
-                params: _,
-                fn_env: _,
-                fn_val: _,
-                is_macro: true,
-                meta: _,
-            }, ..] => Ok(MalType::Bool(true)),
-            [_, ..] => Ok(MalType::Bool(false)),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Convert a sequence type into a list
-    pub fn seq(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::List(l, _) | MalType::Vector(l, _), ..] => Ok(if l.is_empty() {
-                MalType::Nil(())
-            } else {
-                MalType::List(l.clone(), Box::new(MalType::Nil(())))
-            }),
-            [MalType::String(s), ..] => Ok(if s.is_empty() {
-                MalType::Nil(())
-            } else {
-                MalType::List(
-                    s.chars().map(|c| MalType::String(c.to_string())).collect(),
-                    Box::new(MalType::Nil(())),
-                )
-            }),
-            [MalType::Nil(_), ..] => Ok(MalType::Nil(())),
-            [m, ..] => new_eval_error(format!(
-                "Expected a list, vector, string or nil; got {}",
-                m.get_type()
-            )),
-            [] => new_eval_error("Not enough arguments".to_string()),
-        }
-    }
-
-    /// Take a collection and some elements and addes them to the collection.
-    /// For list, inserted from front in reverse order.
-    /// For vector, inserted to back in order.
-    pub fn conj(args: Vec<MalType>) -> MalResult {
-        match args.as_slice() {
-            [MalType::List(l, _), elem @ ..] => Ok(MalType::List(
-                elem.iter().rev().chain(l.iter()).cloned().collect(),
-                Box::new(MalType::Nil(())),
-            )),
-            [MalType::Vector(v, _), elem @ ..] => Ok(MalType::Vector(
-                v.iter().chain(elem.iter()).cloned().collect(),
-                Box::new(MalType::Nil(())),
-            )),
-            [m, ..] => new_eval_error(format!("Expected a list or vector; got {}", m.get_type())),
             [] => new_eval_error("Not enough arguments".to_string()),
         }
     }
@@ -1573,7 +1040,7 @@ pub(crate) mod core {
                         )),
                         [] | [_] => new_eval_error(format!("Not enough arguments for {func_name}")),
                     }
-                },Box::new(MalType::Nil(()))),
+                }),
             ).expect("Macro did not set core function properly")
         };
         // Binary operator - default
@@ -1586,7 +1053,7 @@ pub(crate) mod core {
                         [x, y, ..] => Ok($out_type($func(x, y))),
                         [] | [_] => new_eval_error(format!("Not enough arguments for {func_name}")),
                     }
-                },Box::new(MalType::Nil(()))),
+                }),
             ).expect("Macro did not set core function properly")
         };
     }
@@ -1596,11 +1063,7 @@ pub(crate) mod core {
             $repl_env
                 .set(
                     &MalType::Symbol($name.to_string()),
-                    MalType::LiftedFunc(
-                        $pretty_name.to_string(),
-                        $func,
-                        Box::new(MalType::Nil(())),
-                    ),
+                    MalType::LiftedFunc($pretty_name.to_string(), $func),
                 )
                 .expect("Macro did not set core function properly");
         };
@@ -1608,11 +1071,7 @@ pub(crate) mod core {
             $repl_env
                 .set(
                     &MalType::Symbol($name.to_string()),
-                    MalType::LiftedFunc(
-                        stringify!($func).to_string(),
-                        $func,
-                        Box::new(MalType::Nil(())),
-                    ),
+                    MalType::LiftedFunc(stringify!($func).to_string(), $func),
                 )
                 .expect("Macro did not set core function properly");
         };
@@ -1620,11 +1079,7 @@ pub(crate) mod core {
             $repl_env
                 .set(
                     &MalType::Symbol(stringify!($func).to_string()),
-                    MalType::LiftedFunc(
-                        $pretty_name.to_string(),
-                        $func,
-                        Box::new(MalType::Nil(())),
-                    ),
+                    MalType::LiftedFunc($pretty_name.to_string(), $func),
                 )
                 .expect("Macro did not set core function properly");
         };
@@ -1632,11 +1087,7 @@ pub(crate) mod core {
             $repl_env
                 .set(
                     &MalType::Symbol(stringify!($func).to_string()),
-                    MalType::LiftedFunc(
-                        stringify!($func).to_string(),
-                        $func,
-                        Box::new(MalType::Nil(())),
-                    ),
+                    MalType::LiftedFunc(stringify!($func).to_string(), $func),
                 )
                 .expect("Macro did not set core function properly");
         };
@@ -1676,44 +1127,10 @@ pub(crate) mod core {
         set_core_fn!(env += cons);
         set_core_fn!(env += concat);
         set_core_fn!(env += vec);
-        set_core_fn!(env += nth);
-        set_core_fn!(env += first);
-        set_core_fn!(env += rest);
-        set_core_fn!(env += throw);
-        set_core_fn!(env += apply_fn as "apply");
-        set_core_fn!(env += map_fn as "map");
-        set_core_fn!(env += is_nil as "nil?");
-        set_core_fn!(env += is_true as "true?");
-        set_core_fn!(env += is_false as "false?");
-        set_core_fn!(env += is_symbol as "symbol?");
-        set_core_fn!(env += to_symbol as "symbol");
-        set_core_fn!(env += is_keyword as "keyword?");
-        set_core_fn!(env += to_keyword as "keyword");
-        set_core_fn!(env += is_vector as "vector?");
-        set_core_fn!(env += to_vector as "vector");
-        set_core_fn!(env += is_sequential as "sequential?");
-        set_core_fn!(env += to_hash_map as "hash-map");
-        set_core_fn!(env += is_map  as "map?");
-        set_core_fn!(env += assoc);
-        set_core_fn!(env += dissoc);
-        set_core_fn!(env += get);
-        set_core_fn!(env += contains as "contains?");
-        set_core_fn!(env += keys);
-        set_core_fn!(env += vals);
-        set_core_fn!(env += readline);
-        set_core_fn!(env += time_ms as "time-ms");
-        set_core_fn!(env += is_string as "string?");
-        set_core_fn!(env += is_number as "number?");
-        set_core_fn!(env += is_function as "fn?");
-        set_core_fn!(env += is_macro as "macro?");
-        set_core_fn!(env += seq);
-        set_core_fn!(env += conj);
-        set_core_fn!(env += meta);
-        set_core_fn!(env += with_meta as "with-meta");
 
         env.set(
             &MalType::Symbol("*ARGV*".to_string()),
-            MalType::List(vec![], Box::new(MalType::Nil(()))),
+            MalType::List(vec![]),
         )
         .expect("Could not assign *ARGV*");
 
@@ -1722,23 +1139,19 @@ pub(crate) mod core {
 
     /// A function that adds some predefined function as user defined function
     pub fn add_premade_lisp_fn_to(env: &mut Env) -> &mut Env {
-        // Set Host Language
-        rep(String::from("(def! *host-language* \"rust-mal\")"), env).unwrap();
         // Not function
         rep(String::from("(def! not (fn* (a) (if a false true)))"), env).unwrap();
         // Load file function
         rep(String::from(r#"(def! load-file (fn* (f) (eval (read-string (str "(do " (slurp f) "\nnil)")))))"#), env).unwrap();
-        rep(String::from("(defmacro! cond (fn* (& xs) (if (> (count xs) 0) (list 'if (first xs) (if (> (count xs) 1) (nth xs 1) (throw \"odd number of forms to cond\")) (cons 'cond (rest (rest xs)))))))"), env).unwrap();
         env
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 /// Union of all the types of errors in the program
 pub enum ReplError {
     Parse(ParseError),
     Eval(String),
-    Exception(MalType),
 }
 
 fn new_eval_error<T>(msg: String) -> Result<T, ReplError> {
@@ -1759,7 +1172,7 @@ fn read(line: String) -> MalResult {
 fn eval_ast(expr: MalType, env: Env) -> MalResult {
     match expr {
         sym @ MalType::Symbol(_) => env.get(&sym),
-        ref typ @ MalType::List(ref list, _) | ref typ @ MalType::Vector(ref list, _) => {
+        ref typ @ MalType::List(ref list) | ref typ @ MalType::Vector(ref list) => {
             let new_list = list.iter().map(|e| eval(e.clone(), env.clone())).try_fold(
                 Vec::new(),
                 |mut list, r| {
@@ -1772,12 +1185,12 @@ fn eval_ast(expr: MalType, env: Env) -> MalResult {
                 },
             );
             match typ {
-                MalType::List(_,meta) => new_list.map(|nl| MalType::List(nl, meta.clone())),
-                MalType::Vector(_,meta) => new_list.map(|nl|MalType::Vector(nl, meta.clone())),
+                MalType::List(_) => new_list.map(MalType::List),
+                MalType::Vector(_) => new_list.map(MalType::Vector),
                 _ => unreachable!("MalType not a vector or list but we bound to it in the previous match, impossible!")
             }
         }
-        MalType::Map(m, meta) => {
+        MalType::Map(m) => {
             let new_map = m
                 .iter()
                 .map(|(k, v)| (k, eval(v.clone(), env.clone())))
@@ -1789,7 +1202,7 @@ fn eval_ast(expr: MalType, env: Env) -> MalResult {
                         Err(r.unwrap_err())
                     }
                 });
-            new_map.map(|nm| MalType::Map(nm, meta.clone()))
+            new_map.map(MalType::Map)
         }
         _ => Ok(expr),
     }
@@ -1797,125 +1210,63 @@ fn eval_ast(expr: MalType, env: Env) -> MalResult {
 
 fn quasiquote(ast: MalType) -> MalType {
     match ast {
-        MalType::List(ref l, _) => match l.as_slice() {
+        MalType::List(ref l) => match l.as_slice() {
             [MalType::SpecialForm(SpecialKeyword::Unquote), sec, ..] => sec.clone(),
             _ => {
-                let mut current_result = MalType::List(vec![], Box::new(MalType::Nil(())));
+                let mut current_result = MalType::List(vec![]);
                 for elt in l.iter().rev() {
-                    if let MalType::List(el, _) = elt {
+                    if let MalType::List(el) = elt {
                         if let Some(MalType::SpecialForm(SpecialKeyword::SpliceUnquote)) = el.get(0)
                         {
                             if let Some(sec) = el.get(1) {
-                                current_result = MalType::List(
-                                    vec![
-                                        MalType::Symbol("concat".to_string()),
-                                        sec.clone(),
-                                        current_result.clone(),
-                                    ],
-                                    Box::new(MalType::Nil(())),
-                                );
+                                current_result = MalType::List(vec![
+                                    MalType::Symbol("concat".to_string()),
+                                    sec.clone(),
+                                    current_result.clone(),
+                                ]);
 
                                 continue;
                             }
                         }
                     }
-                    current_result = MalType::List(
-                        vec![
-                            MalType::Symbol("cons".to_string()),
-                            quasiquote(elt.clone()),
-                            current_result.clone(),
-                        ],
-                        Box::new(MalType::Nil(())),
-                    );
+                    current_result = MalType::List(vec![
+                        MalType::Symbol("cons".to_string()),
+                        quasiquote(elt.clone()),
+                        current_result.clone(),
+                    ]);
                 }
                 current_result
             }
         },
-        MalType::Vector(v, _) => {
-            let mut current_result = MalType::List(vec![], Box::new(MalType::Nil(())));
+        MalType::Vector(v) => {
+            let mut current_result = MalType::List(vec![]);
             for elt in v.iter().rev() {
-                if let MalType::List(el, _) = elt {
+                if let MalType::List(el) = elt {
                     if let Some(MalType::SpecialForm(SpecialKeyword::SpliceUnquote)) = el.get(0) {
                         if let Some(sec) = el.get(1) {
-                            current_result = MalType::List(
-                                vec![
-                                    MalType::Symbol("concat".to_string()),
-                                    sec.clone(),
-                                    current_result.clone(),
-                                ],
-                                Box::new(MalType::Nil(())),
-                            );
+                            current_result = MalType::List(vec![
+                                MalType::Symbol("concat".to_string()),
+                                sec.clone(),
+                                current_result.clone(),
+                            ]);
 
                             continue;
                         }
                     }
                 }
-                current_result = MalType::List(
-                    vec![
-                        MalType::Symbol("cons".to_string()),
-                        quasiquote(elt.clone()),
-                        current_result.clone(),
-                    ],
-                    Box::new(MalType::Nil(())),
-                );
+                current_result = MalType::List(vec![
+                    MalType::Symbol("cons".to_string()),
+                    quasiquote(elt.clone()),
+                    current_result.clone(),
+                ]);
             }
-            MalType::List(
-                vec![MalType::Symbol("vec".to_string()), current_result],
-                Box::new(MalType::Nil(())),
-            )
+            MalType::List(vec![MalType::Symbol("vec".to_string()), current_result])
         }
-        typ @ MalType::Map(_, _) | typ @ MalType::Symbol(_) => MalType::List(
-            vec![MalType::SpecialForm(SpecialKeyword::Quote), typ],
-            Box::new(MalType::Nil(())),
-        ),
+        typ @ MalType::Map(_) | typ @ MalType::Symbol(_) => {
+            MalType::List(vec![MalType::SpecialForm(SpecialKeyword::Quote), typ])
+        }
         _ => ast,
     }
-}
-
-/// Check if ast is a macro call; if it is, it returns the macro and the ast it applies to.
-///
-/// Slight modification from instruction to allow immediately returning the macro.
-/// Can emulate the actual behavior by calling `.is_some()` on the result.
-fn is_macro_call(ast: MalType, env: &Env) -> Option<(MalType, Vec<MalType>)> {
-    if let MalType::List(l, _) = ast {
-        if let Some((sym @ MalType::Symbol(_), rest)) = l.split_first() {
-            if let Ok(
-                mac @ MalType::MalFunc {
-                    fn_ast: _,
-                    params: _,
-                    fn_env: _,
-                    fn_val: _,
-                    is_macro: true,
-                    meta: _,
-                },
-            ) = env.get(sym)
-            {
-                return Some((mac, rest.to_vec()));
-            }
-        }
-    }
-    None
-}
-
-/// Evaluates a given macro within an environment and returns its expanded form
-fn macroexpand(ast: MalType, env: &Env) -> MalResult {
-    let mut current_ast = ast;
-    while let Some((
-        MalType::MalFunc {
-            fn_ast,
-            params,
-            fn_env,
-            fn_val: _,
-            is_macro: _,
-            meta: _,
-        },
-        macro_args,
-    )) = is_macro_call(current_ast.clone(), env)
-    {
-        let new_env = Env::with_bindings(Some(fn_env), &params, &macro_args)?;
-        current_ast = eval(*fn_ast, new_env)?;
-    }
-    Ok(current_ast)
 }
 
 /// Evaluate the given expression and return the result
@@ -1923,14 +1274,7 @@ fn eval(ast: MalType, env: Env) -> MalResult {
     let mut current_ast = ast;
     let mut current_env = env;
     let return_value: Result<MalType, ReplError> = 'tco: loop {
-        // Apply expand macro
-        if let MalType::List(_, _) = current_ast.clone() {
-            current_ast = macroexpand(current_ast.clone(), &current_env)?;
-        }
-        // Else skipped, as the result will be the same in the switch
-
-        // Evaluation "switch"
-        if let MalType::List(ast_expr, _) = current_ast.clone() {
+        if let MalType::List(ast_expr) = current_ast.clone() {
             match ast_expr.as_slice() {
                 // Special case #1: Empty list
                 [] => break 'tco Ok(current_ast),
@@ -1954,9 +1298,9 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                     break 'tco new_eval_error("No symbol to define".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::Def), ..] => {
-                    break 'tco new_eval_error("Not a valid def-form".to_string())
+                    break 'tco new_eval_error("Not a valid do-form".to_string())
                 }
-                [MalType::SpecialForm(SpecialKeyword::Let), MalType::List(binds, _) | MalType::Vector(binds, _), let_ast, ..] =>
+                [MalType::SpecialForm(SpecialKeyword::Let), MalType::List(binds) | MalType::Vector(binds), let_ast, ..] =>
                 {
                     current_env = Env::new(Some(current_env.clone()));
                     for (key, val) in binds.iter().step_by(2).zip(binds.iter().skip(1).step_by(2)) {
@@ -1976,7 +1320,7 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                     current_ast = let_ast.clone();
                     continue 'tco;
                 }
-                [MalType::SpecialForm(SpecialKeyword::Let), MalType::List(_, _) | MalType::Vector(_, _)] => {
+                [MalType::SpecialForm(SpecialKeyword::Let), MalType::List(_) | MalType::Vector(_)] => {
                     break 'tco new_eval_error(
                         "No item to process in let*; empty list or vector".to_string(),
                     )
@@ -1985,10 +1329,7 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                     break 'tco new_eval_error("No bindings found".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::Do), between @ .., last] => {
-                    let _ = eval_ast(
-                        MalType::List(between.to_vec(), Box::new(MalType::Nil(()))),
-                        current_env.clone(),
-                    );
+                    let _ = eval_ast(MalType::List(between.to_vec()), current_env.clone());
                     current_ast = last.clone();
                     continue 'tco;
                 }
@@ -2015,7 +1356,7 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                 [MalType::SpecialForm(SpecialKeyword::If)] => {
                     break 'tco new_eval_error("No condition to evaluate".to_string());
                 }
-                [MalType::SpecialForm(SpecialKeyword::Fn), MalType::List(param_syms, _) | MalType::Vector(param_syms, _), fn_ast, ..] =>
+                [MalType::SpecialForm(SpecialKeyword::Fn), MalType::List(param_syms) | MalType::Vector(param_syms), fn_ast, ..] =>
                 {
                     let Ok(params) = param_syms.iter().try_fold(Vec::new(), |mut list, sym| {
                         if let MalType::Symbol(s) = sym {
@@ -2032,11 +1373,9 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                         params,
                         fn_env: current_env.clone(),
                         fn_val: Box::new(MalType::Nil(())),
-                        is_macro: false,
-                        meta: Box::new(MalType::Nil(())),
                     });
                 }
-                [MalType::SpecialForm(SpecialKeyword::Fn), MalType::List(_, _) | MalType::Vector(_, _)] => {
+                [MalType::SpecialForm(SpecialKeyword::Fn), MalType::List(_) | MalType::Vector(_)] => {
                     break 'tco new_eval_error("Function definition has no body".to_string())
                 }
                 [MalType::SpecialForm(SpecialKeyword::Fn), _, ..] => {
@@ -2068,81 +1407,14 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                 [MalType::Symbol(s)] if s == "quasiquoteexpand" => {
                     break 'tco new_eval_error("Nothing to quasi-quoted".to_string())
                 }
-                [MalType::SpecialForm(SpecialKeyword::DefMacro), key @ MalType::Symbol(_), mform, ..] =>
-                {
-                    let MalType::MalFunc { fn_ast, params, fn_env, fn_val, is_macro: _ , meta:_} = eval(mform.clone(), current_env.clone())? else {
-                        break 'tco new_eval_error("Did not evaluate a macro".to_string());
-                    };
-                    break 'tco current_env.set(
-                        key,
-                        MalType::MalFunc {
-                            fn_ast,
-                            params,
-                            fn_env,
-                            fn_val,
-                            is_macro: true,
-                            meta: Box::new(MalType::Nil(())),
-                        },
-                    );
-                }
-                [MalType::SpecialForm(SpecialKeyword::DefMacro), _, ..] => {
-                    break 'tco new_eval_error("Not a valid macro definition.".to_string())
-                }
-                [MalType::SpecialForm(SpecialKeyword::DefMacro)] => {
-                    break 'tco new_eval_error("No macro to define.".to_string())
-                }
-                [MalType::SpecialForm(SpecialKeyword::MacroExpand), mform, ..] => {
-                    break macroexpand(mform.clone(), &current_env)
-                }
-                [MalType::SpecialForm(SpecialKeyword::Try), a, MalType::List(catch_part, _), ..] => {
-                    match catch_part.as_slice() {
-                        [MalType::SpecialForm(SpecialKeyword::Catch), MalType::Symbol(b), c, ..] => {
-                            match eval(a.clone(), current_env.clone()) {
-                                Ok(res) => break 'tco Ok(res),
-                                Err(ReplError::Exception(val)) => {
-                                    current_env = Env::with_bindings(
-                                        Some(current_env),
-                                        &[b.clone()],
-                                        &[val],
-                                    )?;
-                                    break 'tco eval(c.clone(), current_env);
-                                }
-                                Err(ReplError::Eval(msg)) => {
-                                    current_env = Env::with_bindings(
-                                        Some(current_env),
-                                        &[b.clone()],
-                                        &[MalType::String(msg)],
-                                    )?;
-                                    break 'tco eval(c.clone(), current_env);
-                                }
-                                _ => unimplemented!(),
-                            }
-                        }
-                        [MalType::SpecialForm(SpecialKeyword::Catch), MalType::Symbol(_)] => {
-                            break 'tco new_eval_error("No code to run for catch".to_string())
-                        }
-                        [MalType::SpecialForm(SpecialKeyword::Catch), m, ..] => {
-                            break 'tco new_eval_error(format!(
-                                "Expect a symbol for first argument of catch*, got {}",
-                                m.get_type()
-                            ))
-                        }
-                        [] | [_, ..] => break 'tco new_eval_error("Try has no catch".to_string()),
-                    }
-                }
-                [MalType::SpecialForm(SpecialKeyword::Try), ..] => {
-                    break 'tco new_eval_error("Try has nothing to try".to_string())
-                }
                 _ => match eval_ast(current_ast, current_env) {
-                    Ok(MalType::List(res_list, _)) => match res_list.as_slice() {
-                        [MalType::LiftedFunc(_, f, _), args @ ..] => break 'tco f(args.into()),
+                    Ok(MalType::List(res_list)) => match res_list.as_slice() {
+                        [MalType::LiftedFunc(_, f), args @ ..] => break 'tco f(args.into()),
                         [MalType::MalFunc {
                             fn_ast,
                             params,
                             fn_env,
                             fn_val: _,
-                            is_macro: false,
-                            meta: _,
                         }, args @ ..] => {
                             current_ast = (**fn_ast).clone();
                             current_env = Env::with_bindings(Some(fn_env.clone()), params, args)?;
@@ -2169,7 +1441,7 @@ fn eval(ast: MalType, env: Env) -> MalResult {
                 },
             };
         } else {
-            // Otherwise (not a list), just evaluate the ast and return the result
+            // Otherwise, just evaluate the ast and return the result
             break 'tco eval_ast(current_ast, current_env.clone());
         }
     };
@@ -2195,10 +1467,7 @@ pub fn get_cmd_args(env: &mut Env) -> Option<String> {
         return None;
     };
     let rest = args.map(MalType::String).collect();
-    let _ = env.set(
-        &MalType::Symbol("*ARGV*".to_string()),
-        MalType::List(rest, Box::new(MalType::Nil(()))),
-    );
+    let _ = env.set(&MalType::Symbol("*ARGV*".to_string()), MalType::List(rest));
     Some(file_name)
 }
 
@@ -2224,10 +1493,7 @@ pub fn main() -> rustyline::Result<()> {
         };
         return Ok(());
     }
-    let _ = rep(
-        r#"(println (str "Mal [" *host-language* "]"))"#.to_string(),
-        &repl_env,
-    );
+
     loop {
         let line = match rl.readline("user> ") {
             Ok(line) => line,
@@ -2292,67 +1558,41 @@ mod tests {
 
     #[test]
     fn step_3_eval_tester() {
-        let file = include_str!("../tests/step3_env.mal");
-        run_test(file, make_test_env(), true);
+        let file = include_str!("../../tests/step3_env.mal");
+        run_test(file, make_test_env(), false);
     }
     #[test]
     fn step_4_eval_tester() {
-        let file = include_str!("../tests/step4_if_fn_do.mal");
+        let file = include_str!("../../tests/step4_if_fn_do.mal");
         run_test(file, make_test_env(), false);
     }
 
     #[test]
     fn step_5_eval_tester() {
-        let file = include_str!("../tests/step5_tco.mal");
+        let file = include_str!("../../tests/step5_tco.mal");
         run_test(file, make_test_env(), false);
     }
 
     #[test]
     fn step_6_eval_tester() {
-        let file = include_str!("../tests/step6_file.mal");
+        let file = include_str!("../../tests/step6_file.mal");
         run_test(file, make_test_env(), false);
     }
 
     #[test]
     fn step_7_eval_tester() {
-        let file = include_str!("../tests/step7_quote.mal");
-        run_test(file, make_test_env(), false);
-    }
-
-    #[test]
-    fn step_8_eval_tester() {
-        let file = include_str!("../tests/step8_macros.mal");
-        run_test(file, make_test_env(), false);
-    }
-
-    #[test]
-    fn step_9_eval_tester() {
-        let file = include_str!("../tests/step9_try.mal");
-        run_test(file, make_test_env(), false);
-    }
-
-    #[test]
-    fn step_a_eval_tester() {
-        let file = include_str!("../tests/stepA_mal.mal");
-        run_test(file, make_test_env(), false);
+        let file = include_str!("../../tests/step7_quote.mal");
+        run_test(file, make_test_env(), true);
     }
 
     fn run_test(file: &str, mut test_env: Env, print_line: bool) {
         let _ = test_env.set(
             &MalType::Symbol("prn".to_string()),
-            MalType::LiftedFunc(
-                "Simulate Print".to_string(),
-                simulate_print,
-                Box::new(MalType::Nil(())),
-            ),
+            MalType::LiftedFunc("Simulate Print".to_string(), simulate_print),
         );
         let _ = test_env.set(
             &MalType::Symbol("println".to_string()),
-            MalType::LiftedFunc(
-                "Simulate Println".to_string(),
-                simulate_println,
-                Box::new(MalType::Nil(())),
-            ),
+            MalType::LiftedFunc("Simulate Println".to_string(), simulate_println),
         );
         let mut result = Ok(MalType::Nil(()));
         let mut current_out_index = 0;

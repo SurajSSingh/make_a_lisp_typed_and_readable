@@ -1163,18 +1163,18 @@ mod tests {
 
     #[test]
     fn step_3_eval_tester() {
-        let file = include_str!("../tests/step3_env.mal");
+        let file = include_str!("../../tests/step3_env.mal");
         run_test(file, make_test_env(), false);
     }
     #[test]
     fn step_4_eval_tester() {
-        let file = include_str!("../tests/step4_if_fn_do.mal");
+        let file = include_str!("../../tests/step4_if_fn_do.mal");
         run_test(file, make_test_env(), false);
     }
 
     #[test]
     fn step_5_eval_tester() {
-        let file = include_str!("../tests/step5_tco.mal");
+        let file = include_str!("../../tests/step5_tco.mal");
         run_test(file, make_test_env(), false);
     }
 
