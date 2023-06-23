@@ -5,10 +5,10 @@
 
 
 ;;
-;; Testing readline
-(readline "mal-user> ")
-"hello"
-;=>"\"hello\""
+;; Testing readline - Manual Testing
+;; (readline "mal-user> ")
+;; "hello"
+;;=>"\"hello\""
 
 ;;
 ;; Testing *host-language*
@@ -277,7 +277,7 @@
 ;=>nil
 
 ;; Loading sumdown from computations.mal
-(load-file "../tests/computations.mal")
+(load-file "./tests/computations.mal")
 ;=>nil
 
 ;;
