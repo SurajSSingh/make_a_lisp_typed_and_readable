@@ -10,6 +10,7 @@ mod step6_file;
 mod step7_quote;
 mod step8_macros;
 mod step9_try;
+mod stepA_mal;
 fn main() -> Result<(), Box<dyn Error>> {
-    Ok(step9_try::main()?)
+    Ok(stepA_mal::main()?)
 }
