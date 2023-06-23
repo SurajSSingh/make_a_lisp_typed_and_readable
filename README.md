@@ -13,7 +13,7 @@ Making a lisp using the steps from [MAL - Make A Lisp](https://github.com/kanaka
     - [x] [Step 7: Quoting](https://github.com/kanaka/mal/blob/master/process/guide.md#step-7-quoting)
     - [x] [Step 8: Marcos](https://github.com/kanaka/mal/blob/master/process/guide.md#step-8-macros)
     - [x] [Step 9: Try](https://github.com/kanaka/mal/blob/master/process/guide.md#step-9-try)
-    - [ ] [Step A: Metadata, Self-hosting and Interop](https://github.com/kanaka/mal/blob/master/process/guide.md#step-a-metadata-self-hosting-and-interop)
+    - [x] [Step A: Metadata, Self-hosting and Interop](https://github.com/kanaka/mal/blob/master/process/guide.md#step-a-metadata-self-hosting-and-interop)
 
 
 
