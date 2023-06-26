@@ -42,10 +42,10 @@ impl Env {
         }
         if let Some(start) = variadic_start {
             let Some(key) = binds.get(start).map(|s|MalType::Symbol(s.to_string())) else {
-                return new_eval_error(String::from(
-                    "No name found for variadic arguments; there must be a name after the '&' symbol",
-                ));
-            };
+                    return new_eval_error(String::from(
+                        "No name found for variadic arguments; there must be a name after the '&' symbol",
+                    ));
+                };
             let val = exprs.get((start - 1)..).map_or(MalType::Nil(()), |args| {
                 MalType::List(args.to_vec(), Box::new(MalType::Nil(())))
             });
@@ -67,11 +67,11 @@ impl Env {
     }
     pub fn get(&self, key: &MalType) -> Result<MalType, ReplError> {
         let MalType::Symbol(sym) = key else {
-            return new_eval_error(format!("The key is not a symbol: got {}", key));
-        };
+                return new_eval_error(format!("The key is not a symbol: got {}", key));
+            };
         let Some(env) = self.find(sym) else {
-            return new_eval_error(format!("'{}' not found", sym));
-        };
+                return new_eval_error(format!("'{}' not found", sym));
+            };
         let val = env
             .0
             .data
@@ -85,8 +85,8 @@ impl Env {
     /// Set a key in the environment to a value.
     pub fn set(&mut self, key: &MalType, val: MalType) -> Result<MalType, ReplError> {
         let MalType::Symbol(sym) = key else {
-            return new_eval_error(format!("The key is not a symbol: got {}", key));
-        };
+                return new_eval_error(format!("The key is not a symbol: got {}", key));
+            };
         self.0
             .data
             .try_borrow_mut()

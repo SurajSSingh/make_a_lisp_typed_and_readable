@@ -12,12 +12,14 @@ use self::{
     reader::SpecialKeyword,
 };
 
-/// Either results in a MAL type or gives back a message for an error
-pub type MalResult = Result<MalType, ReplError>;
 mod core;
 mod env;
+mod new_env;
 mod printer;
 mod reader;
+mod types;
+/// Either results in a MAL type or gives back a message for an error
+pub type MalResult = Result<MalType, ReplError>;
 
 #[derive(Debug, Clone)]
 /// Union of all the types of errors in the program
@@ -464,7 +466,7 @@ fn eval(ast: MalType, env: Env) -> MalResult {
 
 /// Print a given AST
 fn print(value: MalType) {
-    println!("{}", printer::pr_str(value, true))
+    println!("{}", printer::pr_str_old(value, true))
 }
 
 /// Runs the read, evaluate, and print functions in that order
@@ -546,6 +548,9 @@ pub fn repl() -> rustyline::Result<()> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    use string_interner::StringInterner;
+    let mut interner = StringInterner::default();
+    let _sym0 = interner.get_or_intern("Elephant");
     Ok(repl()?)
 }
 
@@ -663,7 +668,7 @@ mod tests {
                 let output = line.trim_start_matches(";=>");
                 if let Ok(ref success) = result {
                     assert_eq!(
-                        printer::pr_str(success.clone(), true),
+                        printer::pr_str_old(success.clone(), true),
                         output,
                         "Checking line {number} evaluates correctly"
                     );

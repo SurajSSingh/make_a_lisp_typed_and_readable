@@ -57,27 +57,6 @@ enum Token<'t> {
     Atom(&'t str),
 }
 
-impl<'t> Display for Token<'t> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Token::StringTok(str) => f.write_str(str),
-            Token::Comment(com) => f.write_str(com),
-            Token::Atom(atm) => f.write_str(atm),
-            Token::Quote => f.write_str("'"),
-            Token::Quasiquote => f.write_str("`"),
-            Token::Unquote => f.write_str("~"),
-            Token::OpenParen => f.write_str("("),
-            Token::CloseParen => f.write_str(")"),
-            Token::OpenBracket => f.write_str("["),
-            Token::CloseBracket => f.write_str("]"),
-            Token::OpenBrace => f.write_str("{"),
-            Token::CloseBrace => f.write_str("}"),
-            Token::Deref => f.write_str("@"),
-            Token::Meta => f.write_str("^"),
-        }
-    }
-}
-
 impl<'t> Token<'t> {
     /// Check if a given token is a comment
     fn is_comment(&self) -> bool {
@@ -255,7 +234,7 @@ impl std::fmt::Debug for MalType {
 
 impl Display for MalType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&super::printer::pr_str(self.clone(), true))
+        f.write_str(&super::printer::pr_str_old(self.clone(), true))
     }
 }
 
@@ -583,4 +562,79 @@ fn read_atom<'t>(
     } else {
         Err(ParseError::Eof)
     }
+}
+
+pub struct WhitespaceLevel {
+    space: usize,
+    tab: usize,
+}
+
+#[derive(Logos, Clone, Debug, PartialEq)]
+#[logos()]
+enum NewToken<'t> {
+    #[regex(r";.*")]
+    /// Comment: Semicolon ... Stuff in between ... until before \n
+    Comment(&'t str),
+
+    #[regex(r"[ \t]+")]
+    /// Any non-line break whitespace
+    Whitespace(&'t str),
+
+    #[regex(r"[\n\f\r\v]+")]
+    /// Any line breaking whitespace
+    LineBreak(&'t str),
+
+    #[regex(r"[\(\[\{]")]
+    /// Opening Punctuation mark, subset of \p{Open_Punctuation}
+    OpenPunctuation(&'t str),
+    #[regex(r"[\)\]\}]")]
+    /// Close Punctuation marks, subset of \p{Close_Punctuation}
+    ClosePunctuation(&'t str),
+
+    #[regex(r#""(?:\\.|[^\\"])*"?"#)]
+    /// String Token: subset of \p{Initial_Punctuation}...\p{Final_Punctuation}?
+    StringTok(&'t str),
+
+    #[regex(r#"[^\s\[\]{}('"`,;~@)]*"#)]
+    /// Atom: Anything else, should be catch all
+    ///
+    /// Note: Atom disallows ~ and @ because of Logos's parsing rule; this is not in original regex
+    Atom(&'t str),
+}
+
+/// Take a string and produce a list of spanned token
+fn span_tokenize(input: &str) -> Vec<Token> {
+    Box::new(Token::lexer(input).filter_map(|res| res.ok()))
+        .filter(|tok| !tok.is_comment())
+        .collect()
+}
+
+// fn read_form()
+
+/// The form
+/// Adapted from Clojure
+pub enum Form<T> {
+    Def {},
+    Do(Vec<T>),
+    Let {
+        bindings: Vec<String>,
+        exprs: Vec<T>,
+    },
+    Loop {
+        bindings: Vec<String>,
+        exprs: Vec<T>,
+    },
+    If {
+        condition_expr: T,
+        true_expr: T,
+        false_expr: Option<T>,
+    },
+    Quote(Box<Form<T>>),
+    Try {
+        try_expr: Vec<T>,
+        catch_expr: Vec<T>,
+        finally_expr: Option<T>,
+    },
+    Throw(T),
+    Normal(T, Vec<T>),
 }

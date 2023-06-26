@@ -1,7 +1,13 @@
+use std::hash::BuildHasher;
+
+use string_interner::{backend::Backend, StringInterner, Symbol};
+
+use crate::types::{AtomicType, DataType, DataValue};
+
 use super::MalType;
 
 /// Print out the AST expression
-pub fn pr_str(ast: MalType, print_readably: bool) -> String {
+pub fn pr_str_old(ast: MalType, print_readably: bool) -> String {
     match ast {
         MalType::String(s) => {
             if print_readably {
@@ -30,14 +36,14 @@ pub fn pr_str(ast: MalType, print_readably: bool) -> String {
         MalType::List(l, _) => format!(
             "({})",
             l.into_iter()
-                .map(|m| pr_str(m, print_readably))
+                .map(|m| pr_str_old(m, print_readably))
                 .collect::<Vec<_>>()
                 .join(" ")
         ),
         MalType::Vector(v, _) => format!(
             "[{}]",
             v.into_iter()
-                .map(|m| pr_str(m, print_readably))
+                .map(|m| pr_str_old(m, print_readably))
                 .collect::<Vec<_>>()
                 .join(" ")
         ),
@@ -46,8 +52,8 @@ pub fn pr_str(ast: MalType, print_readably: bool) -> String {
             m.into_iter()
                 .map(|(k, v)| format!(
                     "{} {}",
-                    pr_str(k, print_readably),
-                    pr_str(v, print_readably)
+                    pr_str_old(k, print_readably),
+                    pr_str_old(v, print_readably)
                 ))
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -61,6 +67,38 @@ pub fn pr_str(ast: MalType, print_readably: bool) -> String {
             is_macro: _,
             meta: _,
         } => format!("(fn* ({}) {fn_ast})", params.join(" ")),
-        MalType::Atom(a) => format!("(atom {})", pr_str(a.borrow().clone(), print_readably)),
+        MalType::Atom(a) => format!("(atom {})", pr_str_old(a.borrow().clone(), print_readably)),
+    }
+}
+
+pub fn pr_str(ast: DataValue, print_readably: bool) -> String {
+    match ast.0 {
+        DataType::Symbol(s) => format!("symbol_{}", s.to_usize()),
+        _ => todo!(),
+    }
+}
+
+pub fn pr_str_with_resolver<B, H>(
+    ast: DataValue,
+    print_readably: bool,
+    backend: StringInterner<B, H>,
+) -> String
+where
+    B: Backend,
+    H: BuildHasher,
+{
+    match ast.0 {
+        DataType::Atomic(AtomicType::Keyword(k)) => todo!(),
+        DataType::Symbol(s) => todo!(),
+        _ => pr_str(ast, print_readably),
+        // DataType::Symbol(s) => match backend.resolve(s) {
+        //     Some(i) => format!("{i}"),
+        //     None => "Unknown Symbol".to_string(),
+        // },
+        // DataType::Atomic(AtomicType::Keyword(k)) => match backend.resolve(k) {
+        //     Some(i) => format!("{i}"),
+        //     None => "Unknown Symbol".to_string(),
+        // },
+        // _ => pr_str(ast, print_readably),
     }
 }

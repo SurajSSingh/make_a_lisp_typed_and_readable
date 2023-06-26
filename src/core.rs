@@ -3,15 +3,15 @@ use std::{cell::RefCell, fs::read_to_string, io::ErrorKind, iter::once, rc::Rc};
 use super::{
     env::Env,
     eval, new_eval_error,
-    printer::pr_str,
+    printer::pr_str_old,
     reader::{read_str, MalType},
     rep, MalResult, ReplError,
 };
 
-/// Apply pr_str to each argument and join them together
+/// Apply pr_str_old to each argument and join them together
 pub fn stringify_args(args: Vec<MalType>, print_readably: bool, join_str: Option<&str>) -> String {
     args.into_iter()
-        .map(|a| pr_str(a, print_readably))
+        .map(|a| pr_str_old(a, print_readably))
         .collect::<Vec<_>>()
         .join(join_str.unwrap_or(""))
 }
