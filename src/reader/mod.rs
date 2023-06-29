@@ -1,8 +1,11 @@
 use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc, vec};
 
-use logos::Logos;
+use logos::{Logos, Span};
 
 use super::{env::Env, MalResult};
+
+pub(crate) mod lexer;
+pub(crate) mod parser;
 
 #[derive(Logos, Clone, Debug, PartialEq)]
 #[logos(skip r"[ \t\n\f]+")]
@@ -562,79 +565,4 @@ fn read_atom<'t>(
     } else {
         Err(ParseError::Eof)
     }
-}
-
-pub struct WhitespaceLevel {
-    space: usize,
-    tab: usize,
-}
-
-#[derive(Logos, Clone, Debug, PartialEq)]
-#[logos()]
-enum NewToken<'t> {
-    #[regex(r";.*")]
-    /// Comment: Semicolon ... Stuff in between ... until before \n
-    Comment(&'t str),
-
-    #[regex(r"[ \t]+")]
-    /// Any non-line break whitespace
-    Whitespace(&'t str),
-
-    #[regex(r"[\n\f\r\v]+")]
-    /// Any line breaking whitespace
-    LineBreak(&'t str),
-
-    #[regex(r"[\(\[\{]")]
-    /// Opening Punctuation mark, subset of \p{Open_Punctuation}
-    OpenPunctuation(&'t str),
-    #[regex(r"[\)\]\}]")]
-    /// Close Punctuation marks, subset of \p{Close_Punctuation}
-    ClosePunctuation(&'t str),
-
-    #[regex(r#""(?:\\.|[^\\"])*"?"#)]
-    /// String Token: subset of \p{Initial_Punctuation}...\p{Final_Punctuation}?
-    StringTok(&'t str),
-
-    #[regex(r#"[^\s\[\]{}('"`,;~@)]*"#)]
-    /// Atom: Anything else, should be catch all
-    ///
-    /// Note: Atom disallows ~ and @ because of Logos's parsing rule; this is not in original regex
-    Atom(&'t str),
-}
-
-/// Take a string and produce a list of spanned token
-fn span_tokenize(input: &str) -> Vec<Token> {
-    Box::new(Token::lexer(input).filter_map(|res| res.ok()))
-        .filter(|tok| !tok.is_comment())
-        .collect()
-}
-
-// fn read_form()
-
-/// The form
-/// Adapted from Clojure
-pub enum Form<T> {
-    Def {},
-    Do(Vec<T>),
-    Let {
-        bindings: Vec<String>,
-        exprs: Vec<T>,
-    },
-    Loop {
-        bindings: Vec<String>,
-        exprs: Vec<T>,
-    },
-    If {
-        condition_expr: T,
-        true_expr: T,
-        false_expr: Option<T>,
-    },
-    Quote(Box<Form<T>>),
-    Try {
-        try_expr: Vec<T>,
-        catch_expr: Vec<T>,
-        finally_expr: Option<T>,
-    },
-    Throw(T),
-    Normal(T, Vec<T>),
 }

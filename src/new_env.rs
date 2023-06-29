@@ -54,10 +54,16 @@ impl Env {
             };
         }
         if let Some(sym) = more {
-            let val = exprs
+            let value = exprs
                 .get(binds.len()..)
                 .map_or(DataType::default(), |args| DataType::List(args.into()));
-            env.set(sym, crate::types::DataValue(val))?;
+            env.set(
+                sym,
+                crate::types::DataValue {
+                    value,
+                    meta: HashMap::new(),
+                },
+            )?;
         }
         Ok(env)
     }

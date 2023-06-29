@@ -2,7 +2,10 @@ use std::hash::BuildHasher;
 
 use string_interner::{backend::Backend, StringInterner, Symbol};
 
-use crate::types::{AtomicType, DataType, DataValue};
+use crate::types::{
+    atomic::{self, AtomicType},
+    DataType, DataValue,
+};
 
 use super::MalType;
 
@@ -72,7 +75,7 @@ pub fn pr_str_old(ast: MalType, print_readably: bool) -> String {
 }
 
 pub fn pr_str(ast: DataValue, print_readably: bool) -> String {
-    match ast.0 {
+    match ast.value {
         DataType::Symbol(s) => format!("symbol_{}", s.to_usize()),
         _ => todo!(),
     }
@@ -87,8 +90,8 @@ where
     B: Backend,
     H: BuildHasher,
 {
-    match ast.0 {
-        DataType::Atomic(AtomicType::Keyword(k)) => todo!(),
+    match ast.value {
+        DataType::Atomic(atomic::AtomicType::Keyword(k)) => todo!(),
         DataType::Symbol(s) => todo!(),
         _ => pr_str(ast, print_readably),
         // DataType::Symbol(s) => match backend.resolve(s) {
