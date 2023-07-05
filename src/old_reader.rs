@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc, vec};
 
 use logos::Logos;
 
-use super::{env::Env, MalResult};
+use crate::{old_env::Env, old_repl::MalResult};
 
 #[derive(Logos, Clone, Debug, PartialEq)]
 #[logos(skip r"[ \t\n\f]+")]
@@ -255,7 +255,7 @@ impl std::fmt::Debug for MalType {
 
 impl Display for MalType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&super::printer::pr_str(self.clone(), true))
+        f.write_str(&super::old_printer::pr_str(self.clone(), true))
     }
 }
 

@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use super::{new_eval_error, reader::MalType, ReplError};
+use super::{old_reader::MalType, old_repl::new_eval_error, old_repl::ReplError};
 
 // Adapted from https://github.com/kanaka/mal/blob/master/impls/rust/env.rs
 

@@ -1,11 +1,14 @@
 use std::{cell::RefCell, fs::read_to_string, io::ErrorKind, iter::once, rc::Rc};
 
 use super::{
-    env::Env,
-    eval, new_eval_error,
-    printer::pr_str,
-    reader::{read_str, MalType},
-    rep, MalResult, ReplError,
+    old_env::Env,
+    old_printer::pr_str,
+    old_reader::{read_str, MalType},
+    old_repl::eval,
+    old_repl::new_eval_error,
+    old_repl::rep,
+    old_repl::MalResult,
+    ReplError,
 };
 
 /// Apply pr_str to each argument and join them together
@@ -571,7 +574,7 @@ pub fn readline(args: Vec<MalType>) -> MalResult {
         _ => "",
     });
     match response {
-        Ok(line) => pr_dash_str(vec![super::read(line)?]),
+        Ok(line) => pr_dash_str(vec![super::old_repl::read(line)?]),
         Err(rustyline::error::ReadlineError::Eof) => Ok(MalType::Nil(())),
         Err(err) => Err(ReplError::Eval(err.to_string())),
     }
