@@ -2,10 +2,20 @@ use std::{cell::RefCell, collections::VecDeque, fmt::Display, rc::Rc, vec};
 
 use logos::{Logos, Span};
 
+use crate::types::error::ErrorType;
+
+use self::{lexer::NewToken, parser::Form};
+
 use super::{env::Env, MalResult};
 
 pub(crate) mod lexer;
 pub(crate) mod parser;
+
+pub fn new_read_str(input: &str) -> Result<(), ErrorType> {
+    let lexer = NewToken::lexer(input);
+    // let (result, remaining) = Form::read_form(lexer)?;
+    Ok(())
+}
 
 #[derive(Logos, Clone, Debug, PartialEq)]
 #[logos(skip r"[ \t\n\f]+")]

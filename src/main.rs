@@ -14,9 +14,11 @@ use self::{
 
 mod core;
 mod env;
+mod error;
 mod new_env;
 mod printer;
 mod reader;
+mod repl;
 mod types;
 /// Either results in a MAL type or gives back a message for an error
 pub type MalResult = Result<MalType, ReplError>;

@@ -74,15 +74,15 @@ pub fn pr_str_old(ast: MalType, print_readably: bool) -> String {
     }
 }
 
-pub fn pr_str(ast: DataValue, print_readably: bool) -> String {
+pub fn pr_str(ast: DataType, print_readably: bool) -> String {
     match ast.value {
-        DataType::Symbol(s) => format!("symbol_{}", s.to_usize()),
+        DataValue::Symbol(s) => format!("symbol_{}", s.to_usize()),
         _ => todo!(),
     }
 }
 
 pub fn pr_str_with_resolver<B, H>(
-    ast: DataValue,
+    ast: DataType,
     print_readably: bool,
     backend: StringInterner<B, H>,
 ) -> String
@@ -91,8 +91,8 @@ where
     H: BuildHasher,
 {
     match ast.value {
-        DataType::Atomic(atomic::AtomicType::Keyword(k)) => todo!(),
-        DataType::Symbol(s) => todo!(),
+        DataValue::Atomic(atomic::AtomicType::Keyword(k)) => todo!(),
+        DataValue::Symbol(s) => todo!(),
         _ => pr_str(ast, print_readably),
         // DataType::Symbol(s) => match backend.resolve(s) {
         //     Some(i) => format!("{i}"),

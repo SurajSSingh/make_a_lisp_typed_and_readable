@@ -1,26 +1,21 @@
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use im::HashMap;
 use string_interner::{
     symbol::SymbolUsize, DefaultBackend, DefaultHashBuilder, StringInterner, Symbol,
 };
 
-use crate::types::{DataType, DataValue, DataValueResult, ErrorType};
-
-use super::{new_eval_error, ReplError};
+use crate::types::{
+    collection::CollectionType, error::ErrorType, DataType, DataValue, DataValueResult,
+    EvaluableType,
+};
 
 // Adapted from https://github.com/kanaka/mal/blob/master/impls/rust/env.rs
-
-type EnvStringInterner = StringInterner<DefaultBackend<SymbolUsize>, DefaultHashBuilder>;
 
 #[derive(Debug, Clone)]
 pub struct EnvStruct {
     outer: Option<Env>,
-    data: HashMap<SymbolUsize, DataValue>,
+    data: HashMap<SymbolUsize, DataType>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,7 +33,7 @@ impl Env {
         outer: Option<Env>,
         binds: &[SymbolUsize],
         more: Option<&SymbolUsize>,
-        exprs: &[DataValue],
+        exprs: &[DataType],
     ) -> Result<Env, ErrorType> {
         let mut env = Env::new(outer);
 
@@ -56,10 +51,12 @@ impl Env {
         if let Some(sym) = more {
             let value = exprs
                 .get(binds.len()..)
-                .map_or(DataType::default(), |args| DataType::List(args.into()));
+                .map_or(EvaluableType::default(), |args| {
+                    EvaluableType::Data(DataValue::Collection(CollectionType::List(args.into())))
+                });
             env.set(
                 sym,
-                crate::types::DataValue {
+                DataType {
                     value,
                     meta: HashMap::new(),
                 },
@@ -105,7 +102,7 @@ impl Env {
     }
 
     /// Set a key in the environment to a value.
-    pub fn set(&self, key: &SymbolUsize, val: DataValue) -> DataValueResult {
+    pub fn set(&self, key: &SymbolUsize, val: DataType) -> DataValueResult {
         self.0
             .try_lock()
             // FIXME: Handle case when lock cannot be acquired

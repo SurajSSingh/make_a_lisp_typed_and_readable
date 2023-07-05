@@ -14,7 +14,7 @@ regex = "1.8.4"
 evcxr = "0.14.2"
 derive_more = "0.99.17"
 im = {version= "15.1.0"}
-ordered-float = { version = "3.0", default-features = false }
-num-rational = "0.4.1"
+fraction = "0.13.1"
+num = "0.4.0"
 string-interner = "0.14.0"
 imstr = "0.2.0"

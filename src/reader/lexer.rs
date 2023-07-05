@@ -1,18 +1,16 @@
 //! This file contains all items related to the lexical phase of the program.
 //! It takes a string representing the line being lexed and converts it into a linear structure of Tokens.
 
-use std::num::ParseIntError;
+use std::{fmt::format, num::ParseIntError};
 
+use crate::types::error::{LexError, LexResult};
 use imstr::ImString;
-use logos::{Lexer, Logos, Span};
-use num_rational::Ratio;
-use ordered_float::OrderedFloat;
-
-type LexResult<T> = Result<T, LexError>;
-
-// pub trait FromLexer {
-//     fn from_lexer(lex: &mut logos::Lexer<NewToken>) -> Option<Self>;
-// }
+use logos::{Lexer, Logos, Span, SpannedIter};
+use num::{rational::Ratio, Zero};
+use string_interner::{
+    symbol::{SymbolU32, SymbolUsize},
+    StringInterner,
+};
 
 /// Whitespace level
 #[derive(
@@ -61,14 +59,6 @@ pub enum SpecialReaderSymbol {
     Dispatch,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum LexError {
-    #[default]
-    Default,
-    NumberParse,
-    InvalidCharacter(String),
-}
-
 fn lex_whitespace(lex: &mut Lexer<NewToken>) -> WhitespaceLevel {
     lex.slice()
         .chars()
@@ -78,6 +68,13 @@ fn lex_whitespace(lex: &mut Lexer<NewToken>) -> WhitespaceLevel {
             _ => unreachable!("Got a non-whitespace character"),
         })
         .into()
+}
+
+fn lex_newline(lex: &mut Lexer<NewToken>) -> usize {
+    lex.slice().chars().fold(0, |count, chr| match chr {
+        '\n' => count + 1,
+        _ => count,
+    })
 }
 
 fn lex_punctuation(lex: &mut Lexer<NewToken>) -> PunctuationType {
@@ -105,7 +102,7 @@ fn lex_symbol(lex: &mut Lexer<NewToken>) -> LexResult<SpecialReaderSymbol> {
 fn lex_integer(lex: &mut Lexer<NewToken>) -> LexResult<i64> {
     lex.slice()
         .parse::<i64>()
-        .map_err(|_| LexError::NumberParse)
+        .map_err(|i| LexError::NumberParse(format!("Not a valid integer: {i}")))
 }
 
 fn lex_rational(lex: &mut Lexer<NewToken>) -> LexResult<(bool, Ratio<u32>)> {
@@ -119,16 +116,32 @@ fn lex_rational(lex: &mut Lexer<NewToken>) -> LexResult<(bool, Ratio<u32>)> {
     } else {
         true
     };
-    let num = slice.parse::<u32>().map_err(|_| LexError::NumberParse)?;
-    let dem = slice.parse::<u32>().map_err(|_| LexError::NumberParse)?;
+    let num = slice
+        .parse::<u32>()
+        .map_err(|i| LexError::NumberParse(format!("Not a valid numerator: {i}")))?;
+    let dem = slice
+        .parse::<u32>()
+        .and_then(|n| {
+            if n.is_zero() {
+                Err(ParseIntError {
+                    kind: std::num::IntErrorKind::Zero,
+                })
+            } else {
+                Ok(n)
+            }
+        })
+        .map_err(|i| LexError::NumberParse(format!("Not a valid denometer: {i}")))?;
     Ok((sign, Ratio::from((num, dem))))
 }
 
-fn lex_float(lex: &mut Lexer<NewToken>) -> LexResult<OrderedFloat<f64>> {
+fn lex_float(lex: &mut Lexer<NewToken>) -> LexResult<f64> {
     lex.slice()
         .parse::<f64>()
-        .map(|f| OrderedFloat(f))
-        .map_err(|_| LexError::NumberParse)
+        .map_err(|f| LexError::NumberParse(format!("Not a valid float: {f}")))
+}
+
+pub fn lex_keyword(lex: &mut Lexer<NewToken>) -> LexResult<SymbolU32> {
+    Ok(lex.extras.get_or_intern(lex.slice()))
 }
 
 pub fn lex_string(lex: &mut Lexer<NewToken>) -> LexResult<ImString> {
@@ -152,7 +165,8 @@ pub fn lex_character(lex: &mut Lexer<NewToken>) -> LexResult<char> {
     // 4-numbered Unicode literal
     else if character.len() == 5 {
         let (_u, code) = character.split_at(1);
-        let number = u32::from_str_radix(code, 16).map_err(|_| LexError::NumberParse)?;
+        let number = u32::from_str_radix(code, 16)
+            .map_err(|i| LexError::NumberParse(format!("Not a valid chacter: {i}")))?;
         match char::from_u32(number) {
             Some(c) => Ok(c),
             None => Err(LexError::InvalidCharacter(character.to_string())),
@@ -172,8 +186,8 @@ pub fn lex_character(lex: &mut Lexer<NewToken>) -> LexResult<char> {
     }
 }
 
-#[derive(Logos, Clone, Debug, PartialEq, Eq)]
-#[logos(error = LexError)]
+#[derive(Logos, Clone, Debug, PartialEq)]
+#[logos(error = LexError, extras = StringInterner)]
 pub enum NewToken {
     #[regex(r";.*")]
     /// Comment: Semicolon ... Stuff in between ... until before \n
@@ -183,7 +197,7 @@ pub enum NewToken {
     /// Any non-line break whitespace
     Whitespace(WhitespaceLevel),
 
-    #[regex(r"[\n\f\r]+", |b| b.slice().len(), priority = 10)]
+    #[regex(r"(\r|\n|\r\n)+", lex_newline, priority = 10)]
     /// Any line breaking whitespace
     LineBreak(usize),
 
@@ -208,7 +222,7 @@ pub enum NewToken {
 
     /// Floating point number
     #[regex(r"(\+|-)?(0|[1-9][0-9]*)[.]?[0-9]*", lex_float)]
-    Float(OrderedFloat<f64>),
+    Float(f64),
 
     /// Single UTF-8 Character or escaped 4-numbered Unicode literal or special named character
     #[regex(
@@ -216,6 +230,9 @@ pub enum NewToken {
         lex_character
     )]
     Character(char),
+
+    #[regex(r":\w[\d\w]*", lex_keyword)]
+    Keyword(SymbolU32),
 
     // Old: r#""(?:\\.|[^\\"])*"?"#
     #[regex(r#""([^"\\]*(\\.[^"\\]*)*)""#, lex_string)]
@@ -235,21 +252,22 @@ pub enum NewToken {
     False,
 
     // Catch-all
-    #[regex(r#"[^\s\[\]{}('"`,;)]*"#)]
+    #[regex(r#"[^\s\[\]{}('"`,;)]*"#, |s| s.slice().to_string())]
     /// Atom: Anything else, should be catch all
-    Atom,
+    Atom(String),
 }
 
-// /// Take a string and produce a list of spanned token
-// fn span_tokenize(input: &str) -> Vec<(NewToken, Span)> {
-//     NewToken::lexer(input)
-//         .spanned()
-//         .filter_map(|(res, span)| res.ok().map(|r| (r, span)))
-//         .collect()
-// }
-
-// fn dothing(input: &str) {
-//     let x = span_tokenize(input);
-//     let y = x.into_iter().map(|(a, b)| a).collect();
-//     super::parser::Form::read_form(y);
-// }
+impl NewToken {
+    /// Tokenize the input with the lexer into an iterator of tokens with span
+    pub fn tokenize(input: &str) -> LexResult<Vec<(NewToken, Span)>> {
+        NewToken::lexer(input)
+            .spanned()
+            .try_fold(Vec::new(), |mut vec, (res, span)| match res {
+                Ok(token) => {
+                    vec.push((token, span));
+                    Ok(vec)
+                }
+                Err(err) => Err(err),
+            })
+    }
+}
