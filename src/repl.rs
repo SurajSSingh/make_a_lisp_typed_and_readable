@@ -2,13 +2,13 @@
 
 use rustyline::{history::History, Editor, Helper, Result};
 
-use crate::{old_repl::MalResult, reader::Form};
+use crate::{old_repl::MalResult, reader::Form, types::value::MaltarSpannedValue};
 
-pub fn read(line: &str) -> Form {
+pub fn read(line: &str) -> Form<MaltarSpannedValue> {
     todo!()
 }
 
-pub fn eval(ast: Form) -> MalResult {
+pub fn eval(ast: Form<MaltarSpannedValue>) -> MalResult {
     todo!()
 }
 

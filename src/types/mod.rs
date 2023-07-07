@@ -6,4 +6,4 @@ use self::{error::Error, value::MaltarSpannedValue};
 pub mod error;
 pub mod value;
 
-pub type MaltarResult = Result<MaltarSpannedValue, Error>;
+pub type MaltarResult<OkVal = MaltarSpannedValue> = Result<OkVal, Error>;

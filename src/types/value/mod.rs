@@ -1,18 +1,13 @@
 use fraction::GenericDecimal;
 use im::{HashMap, HashSet, Vector};
-use imstr::ImString;
-use kstring::KString;
 use logos::Span;
 use string_interner::symbol::SymbolUsize;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum AtomicValue {
-    Nil(()),
-    Bool(bool),
-    Float(GenericDecimal<u64, u16>),
-    String(ImString),
-    Keyword(KString),
-}
+use crate::env::Env;
+
+use super::MaltarResult;
+
+mod atomic;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CollectionValue<Val>
@@ -20,7 +15,7 @@ where
     Val: Clone + std::hash::Hash + Eq + Ord,
 {
     List(Vector<Val>),
-    Vector(Vector<Val>),
+    Vector(Vec<Val>),
     HashMap(HashMap<Val, Val>),
     HashSet(HashSet<Val>),
 }
@@ -36,14 +31,33 @@ pub enum MaltarValue<Val>
 where
     Val: Clone + std::hash::Hash + Eq + Ord,
 {
-    Atomic(AtomicValue),
+    Atomic(atomic::AtomicValue),
     Collection(CollectionValue<Val>),
     Function(FunctionValue),
-    Var(SymbolUsize),
+    Symbol(SymbolUsize),
+}
+
+impl<Val> MaltarValue<Val>
+where
+    Val: Clone + std::hash::Hash + Eq + Ord,
+{
+    pub fn eval_ast(self, env: &Env<Val>) -> MaltarResult<MaltarValue<Val>> {
+        match self {
+            MaltarValue::Symbol(_) => todo!(),
+            MaltarValue::Collection(_) => todo!(),
+            _ => Ok(self),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MaltarSpannedValue(MaltarValue<MaltarSpannedValue>, Span);
+
+impl From<MaltarSpannedValue> for MaltarValue<MaltarSpannedValue> {
+    fn from(val: MaltarSpannedValue) -> Self {
+        val.0
+    }
+}
 
 impl PartialOrd for MaltarSpannedValue {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
