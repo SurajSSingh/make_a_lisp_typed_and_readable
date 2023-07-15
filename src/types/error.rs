@@ -8,7 +8,9 @@ pub enum LexError {
 pub type LexResult<T> = Result<T, LexError>;
 
 #[derive(Debug, Clone, PartialEq, derive_more::Display)]
-pub enum ParseError {}
+pub enum ParseError {
+    UnexpectedEOF,
+}
 
 #[derive(Debug, Clone, PartialEq, derive_more::Display)]
 pub enum TypeError {}
